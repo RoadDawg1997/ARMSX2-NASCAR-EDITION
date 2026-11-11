@@ -847,8 +847,43 @@ bool GSTextureReplacements::HasReplacementTextureWithOtherPalette(const GSTextur
 GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache::HashCacheKey& hash, bool mipmap,
 	bool* pending, std::pair<u8, u8>* alpha_minmax)
 {
-	const TextureName name(CreateTextureName(hash, 0));
+	TextureName name(CreateTextureName(hash, 0));
 	*pending = false;
+
+	// NT2004 car textures fix
+	const std::string dump_filename(GetDumpFilename(name, 0));
+	if (dump_filename.find("002693") != std::string::npos)
+	{
+		return nullptr;
+	}
+
+	if (dump_filename.find("002653") != std::string::npos || dump_filename.find("002640") != std::string::npos ||
+		dump_filename.find("001dd3") != std::string::npos || dump_filename.find("002213") != std::string::npos)
+	{
+		const bool bCareer = dump_filename.find("002640") != std::string::npos;
+
+		// Replace TEX0Hash with CLUTHash so it matches CLUTHash-bits.png replacement files
+		name.TEX0Hash = name.CLUTHash;
+		name.CLUTHash = 0;
+
+		if (bCareer)
+		{
+			const std::string career_path = Path::Combine(
+				Path::Combine(GetGameTextureDirectory(), TEXTURE_REPLACEMENT_SUBDIRECTORY_NAME), "Career.png");
+			std::optional<ReplacementTexture> replacement(LoadReplacementTexture(name, career_path, !mipmap));
+			if (!replacement.has_value())
+				return nullptr;
+
+			std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
+			ReplacementTexture& local = replacement.value();
+			const ReplacementTexture* rtex = InsertReplacementCacheLocked(name, local);
+			if (!rtex)
+				rtex = &local;
+
+			*alpha_minmax = rtex->alpha_minmax;
+			return CreateReplacementTexture(*rtex, mipmap);
+		}
+	}
 
 	// replacement for this name exists?
 	auto fnit = s_replacement_texture_filenames.find(name);
@@ -896,6 +931,9 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 		// and upload to gpu
 		*alpha_minmax = rtex->alpha_minmax;
 		return CreateReplacementTexture(*rtex, mipmap);
+	}
+}
+
 	}
 }
 
