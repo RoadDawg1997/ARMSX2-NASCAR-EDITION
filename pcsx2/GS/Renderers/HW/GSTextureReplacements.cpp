@@ -933,10 +933,6 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 		return CreateReplacementTexture(*rtex, mipmap);
 	}
 }
-
-	}
-}
-
 template <GSTexture::Format format>
 std::pair<u8, u8> GSTextureReplacements::GetBCAlphaMinMax(ReplacementTexture& rtex)
 {
