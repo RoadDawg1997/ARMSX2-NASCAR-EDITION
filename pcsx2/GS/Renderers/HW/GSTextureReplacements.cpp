@@ -880,19 +880,28 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 		return CreateReplacementTexture(*rtex, mipmap);
 	}
 
-	// Try normal 2-hash lookup first
+		// Try normal 2-hash lookup first
 	auto fnit = s_replacement_texture_filenames.find(name);
 
-	// Fall back to CLUTHash-only lookup for any leading-hyphen "-CLUTHash-bits.png" car, track, or menu texture
+	// Fall back to CLUTHash-only lookup for all EA NASCAR series (Sprint Cup, Nationwide, Trucks, Whelen)
 	if (fnit == s_replacement_texture_filenames.end() && name.CLUTHash != 0)
 	{
 		TextureName clut_only_name = name;
 		clut_only_name.TEX0Hash = name.CLUTHash;
 		clut_only_name.CLUTHash = 0;
 		fnit = s_replacement_texture_filenames.find(clut_only_name);
+
+		// On-track Nationwide, Trucks, and Whelen Modifieds request 0x2213 or 0x1dd3 while HD liveries are stored as 0x2653
+		if (fnit == s_replacement_texture_filenames.end())
+		{
+			clut_only_name.bits = 0x00002653;
+			fnit = s_replacement_texture_filenames.find(clut_only_name);
+		}
+
 		if (fnit != s_replacement_texture_filenames.end())
 			name = clut_only_name;
 	}
+	
 
 	if (fnit == s_replacement_texture_filenames.end())
 		return nullptr;
