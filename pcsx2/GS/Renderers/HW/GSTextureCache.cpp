@@ -7114,7 +7114,46 @@ GSTextureCache::Source* GSTextureCache::CreateSource(const GIFRegTEX0& TEX0, con
 
 	bool hack = false;
 	bool channel_shuffle = dst && (TEX0.PSM == PSMT8) && (GSRendererHW::GetInstance()->TestChannelShuffle(dst));
+	// Check replacement textures even when backed by a RenderTarget (e.g. EA NASCAR on-track car sheets)
+	if (dst && psm.pal > 0 && GSConfig.LoadTextureReplacements && GSTextureReplacements::HasAnyReplacementTextures())
+	{
+		bool paltex = (GSConfig.GPUPaletteConversion && psm.pal > 0) || gpu_clut;
+		const u32* clut = static_cast<const u32*>(g_gs_renderer->m_mem.m_clut);
+		SourceRegion rep_region = region;
+		const int rep_tw = rep_region.HasX() ? rep_region.GetWidth() : (1 << TEX0.TW);
+		const int rep_th = rep_region.HasY() ? rep_region.GetHeight() : (1 << TEX0.TH);
 
+		if (HashCacheEntry* hc = LookupHashCache(TEX0, TEXA, paltex, clut, lod, rep_region))
+		{
+			if (hc->is_replacement)
+			{
+				src->m_region = rep_region;
+				src->m_unscaled_size = GSVector2i(rep_tw, rep_th);
+				src->m_scale = 1.0f;
+				src->m_from_hash_cache = hc;
+				src->m_texture = hc->texture;
+				src->m_alpha_minmax = hc->alpha_minmax;
+				src->m_valid_alpha_minmax = hc->valid_alpha_minmax;
+
+				if (gpu_clut)
+					AttachPaletteToSource(src, gpu_clut);
+				else
+					AttachPaletteToSource(src, psm.pal, paltex, false);
+
+				if (src != m_temporary_source)
+				{
+					src->SetPages();
+					m_src.Add(src, TEX0);
+				}
+				return src;
+			}
+			else if (--hc->refcount == 0)
+			{
+				hc->age = 0;
+			}
+		}
+	}
+	
 	if (dst && (x_offset != 0 || y_offset != 0) && (TEX0.PSM != PSMT8 || channel_shuffle))
 	{
 		const float scale = dst->m_scale;
