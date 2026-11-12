@@ -459,13 +459,15 @@ GSTextureCache::HashCacheKey GSTextureReplacements::HashCacheKeyFromTextureName(
 
 std::optional<TextureName> GSTextureReplacements::ParseReplacementName(const std::string& filename)
 {
+	const char* parse_str = (!filename.empty() && filename[0] == '-') ? (filename.c_str() + 1) : filename.c_str();
+
 	TextureName ret;
 	ret.miplevel = 0;
 
 	GSTextureCache::SourceRegion full_region;
 
 	char extension_dot;
-	if (std::sscanf(filename.c_str(), TEXTURE_FILENAME_REGION_CLUT_FORMAT_STRING "%c", &ret.TEX0Hash, &ret.CLUTHash,
+	if (std::sscanf(parse_str, TEXTURE_FILENAME_REGION_CLUT_FORMAT_STRING "%c", &ret.TEX0Hash, &ret.CLUTHash,
 			&ret.region_width, &ret.region_height, &ret.bits, &extension_dot) == 6 &&
 		extension_dot == '.')
 	{
@@ -473,7 +475,7 @@ std::optional<TextureName> GSTextureReplacements::ParseReplacementName(const std
 		return ret;
 	}
 
-	if (std::sscanf(filename.c_str(), TEXTURE_FILENAME_REGION_FORMAT_STRING "%c", &ret.TEX0Hash,
+	if (std::sscanf(parse_str, TEXTURE_FILENAME_REGION_FORMAT_STRING "%c", &ret.TEX0Hash,
 			&ret.region_width, &ret.region_height, &ret.bits, &extension_dot) == 5 &&
 		extension_dot == '.')
 	{
@@ -483,7 +485,7 @@ std::optional<TextureName> GSTextureReplacements::ParseReplacementName(const std
 	}
 
 	// Allow loading of dumped textures from older versions that included the full region bits.
-	if (std::sscanf(filename.c_str(), TEXTURE_FILENAME_OLD_REGION_CLUT_FORMAT_STRING "%c", &ret.TEX0Hash, &ret.CLUTHash,
+	if (std::sscanf(parse_str, TEXTURE_FILENAME_OLD_REGION_CLUT_FORMAT_STRING "%c", &ret.TEX0Hash, &ret.CLUTHash,
 			&full_region.bits, &ret.bits, &extension_dot) == 5 &&
 		extension_dot == '.')
 	{
@@ -493,7 +495,7 @@ std::optional<TextureName> GSTextureReplacements::ParseReplacementName(const std
 		return ret;
 	}
 
-	if (std::sscanf(filename.c_str(), TEXTURE_FILENAME_OLD_REGION_FORMAT_STRING "%c", &ret.TEX0Hash, &full_region.bits,
+	if (std::sscanf(parse_str, TEXTURE_FILENAME_OLD_REGION_FORMAT_STRING "%c", &ret.TEX0Hash, &full_region.bits,
 			&ret.bits, &extension_dot) == 4 &&
 		extension_dot == '.')
 	{
@@ -507,7 +509,7 @@ std::optional<TextureName> GSTextureReplacements::ParseReplacementName(const std
 	ret.region_width = 0;
 	ret.region_height = 0;
 
-	if (std::sscanf(filename.c_str(), TEXTURE_FILENAME_CLUT_FORMAT_STRING "%c", &ret.TEX0Hash, &ret.CLUTHash, &ret.bits,
+	if (std::sscanf(parse_str, TEXTURE_FILENAME_CLUT_FORMAT_STRING "%c", &ret.TEX0Hash, &ret.CLUTHash, &ret.bits,
 			&extension_dot) == 4 &&
 		extension_dot == '.')
 	{
@@ -515,7 +517,7 @@ std::optional<TextureName> GSTextureReplacements::ParseReplacementName(const std
 		return ret;
 	}
 
-	if (std::sscanf(filename.c_str(), TEXTURE_FILENAME_FORMAT_STRING "%c", &ret.TEX0Hash, &ret.bits, &extension_dot) ==
+	if (std::sscanf(parse_str, TEXTURE_FILENAME_FORMAT_STRING "%c", &ret.TEX0Hash, &ret.bits, &extension_dot) ==
 			3 &&
 		extension_dot == '.')
 	{
@@ -850,43 +852,48 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 	TextureName name(CreateTextureName(hash, 0));
 	*pending = false;
 
-	// NT2004 car textures fix
+	// NT2004 / NASCAR 09 career & car textures fix
 	const std::string dump_filename(GetDumpFilename(name, 0));
 	if (dump_filename.find("002693") != std::string::npos)
 	{
 		return nullptr;
 	}
 
-	if (dump_filename.find("002653") != std::string::npos || dump_filename.find("002640") != std::string::npos ||
-		dump_filename.find("001dd3") != std::string::npos || dump_filename.find("002213") != std::string::npos)
+	if (dump_filename.find("002640") != std::string::npos)
 	{
-		const bool bCareer = dump_filename.find("002640") != std::string::npos;
-
-		// Replace TEX0Hash with CLUTHash so it matches CLUTHash-bits.png replacement files
 		name.TEX0Hash = name.CLUTHash;
 		name.CLUTHash = 0;
 
-		if (bCareer)
-		{
-			const std::string career_path = Path::Combine(
-				Path::Combine(GetGameTextureDirectory(), TEXTURE_REPLACEMENT_SUBDIRECTORY_NAME), "Career.png");
-			std::optional<ReplacementTexture> replacement(LoadReplacementTexture(name, career_path, !mipmap));
-			if (!replacement.has_value())
-				return nullptr;
+		const std::string career_path = Path::Combine(
+			Path::Combine(GetGameTextureDirectory(), TEXTURE_REPLACEMENT_SUBDIRECTORY_NAME), "Career.png");
+		std::optional<ReplacementTexture> replacement(LoadReplacementTexture(name, career_path, !mipmap));
+		if (!replacement.has_value())
+			return nullptr;
 
-			std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
-			ReplacementTexture& local = replacement.value();
-			const ReplacementTexture* rtex = InsertReplacementCacheLocked(name, local);
-			if (!rtex)
-				rtex = &local;
+		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
+		ReplacementTexture& local = replacement.value();
+		const ReplacementTexture* rtex = InsertReplacementCacheLocked(name, local);
+		if (!rtex)
+			rtex = &local;
 
-			*alpha_minmax = rtex->alpha_minmax;
-			return CreateReplacementTexture(*rtex, mipmap);
-		}
+		*alpha_minmax = rtex->alpha_minmax;
+		return CreateReplacementTexture(*rtex, mipmap);
 	}
 
-	// replacement for this name exists?
+	// Try normal 2-hash lookup first
 	auto fnit = s_replacement_texture_filenames.find(name);
+
+	// Fall back to CLUTHash-only lookup for any leading-hyphen "-CLUTHash-bits.png" car, track, or menu texture
+	if (fnit == s_replacement_texture_filenames.end() && name.CLUTHash != 0)
+	{
+		TextureName clut_only_name = name;
+		clut_only_name.TEX0Hash = name.CLUTHash;
+		clut_only_name.CLUTHash = 0;
+		fnit = s_replacement_texture_filenames.find(clut_only_name);
+		if (fnit != s_replacement_texture_filenames.end())
+			name = clut_only_name;
+	}
+
 	if (fnit == s_replacement_texture_filenames.end())
 		return nullptr;
 
