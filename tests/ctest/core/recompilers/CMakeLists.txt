@@ -87,6 +87,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_pinned_gpr_tests.cpp
 	ee_rec_syscall_seam_tests.cpp
 	ee_rec_event_stub_tests.cpp
+	ee_rec_extended_ram_tests.cpp
 	ee_rec_fast_forward_mark_tests.cpp
 	ee_rec_regalloc_coupling_tests.cpp
 	ee_rec_muldiv_tests.cpp
@@ -174,6 +175,7 @@ add_pcsx2_test(recompiler_tests
 	mvu_progcache_disk_tests.cpp
 	mvu_waitmtvu_stub_tests.cpp
 	mvu_ebit_exit_tests.cpp
+	mvu_second_boot_tests.cpp
 	vuaot_frontend_tests.cpp
 	vuaot_live_tests.cpp
 	vuaot_lowering_tests.cpp
