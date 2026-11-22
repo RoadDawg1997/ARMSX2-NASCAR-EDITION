@@ -77,6 +77,13 @@ VKSwapChain::~VKSwapChain()
 
 VkSurfaceKHR VKSwapChain::CreateVulkanSurface(VkInstance instance, VkPhysicalDevice physical_device, WindowInfo* wi)
 {
+	// Every window type but VK_KHR_display needs a native window, and the platform functions crash on a null one.
+	if (wi->type != WindowInfo::Type::VulkanDirect && !wi->window_handle && !wi->surface_handle)
+	{
+		Console.Error("VK: The window has no native handle, not creating a surface.");
+		return VK_NULL_HANDLE;
+	}
+
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
 	if (wi->type == WindowInfo::Type::Win32)
 	{
@@ -332,12 +339,31 @@ void VKSwapChain::DestroyVulkanSurface(VkInstance instance, WindowInfo* wi, VkSu
 #endif
 }
 
+// Whether the device's present queue can present to the surface. A device opened before its window had a
+// surface picked that queue without one to ask. The validation layers also want this asked before a swap
+// chain is made on a surface.
+static bool PresentQueueSupportsSurface(VkSurfaceKHR surface)
+{
+	const GSDeviceVK* dev = GSDeviceVK::GetInstance();
+	VkBool32 present_supported = VK_FALSE;
+	const VkResult res = vkGetPhysicalDeviceSurfaceSupportKHR(
+		dev->GetPhysicalDevice(), dev->GetPresentQueueFamilyIndex(), surface, &present_supported);
+	if (res != VK_SUCCESS)
+	{
+		LOG_VULKAN_ERROR(res, "vkGetPhysicalDeviceSurfaceSupportKHR failed: ");
+		return false;
+	}
+	if (!present_supported)
+		Console.Error("VK: Queue family %u cannot present to this surface.", dev->GetPresentQueueFamilyIndex());
+	return present_supported;
+}
+
 std::unique_ptr<VKSwapChain> VKSwapChain::Create(const WindowInfo& wi, VkSurfaceKHR surface,
 	VkPresentModeKHR present_mode, std::optional<bool> exclusive_fullscreen_control)
 {
 	std::unique_ptr<VKSwapChain> swap_chain =
 		std::unique_ptr<VKSwapChain>(new VKSwapChain(wi, surface, present_mode, exclusive_fullscreen_control));
-	if (!swap_chain->CreateSwapChain())
+	if (!PresentQueueSupportsSurface(surface) || !swap_chain->CreateSwapChain())
 		return nullptr;
 
 	return swap_chain;
@@ -525,11 +551,26 @@ static VkSurfaceTransformFlagBitsKHR SurfaceTransformFromRotation(DisplayRotatio
 	}
 }
 
+// A VK_KHR_display surface that does not turn for the panel. Mesa's report the mode as the panel scans
+// it, with the identity transform only. (malisx2's framebuffer surfaces do turn: they report the panel's
+// turn as currentTransform and the mode turned, like Android.)
+static bool IsUnturnedDisplaySurface(const VkSurfaceCapabilitiesKHR& caps, const WindowInfo& wi)
+{
+	return (wi.type == WindowInfo::Type::VulkanDirect && caps.currentTransform == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR);
+}
+
 // The rotation the surface wants pre-rotated: its currentTransform, or where the window system does
 // not report one through Vulkan (Wayland), the one the frontend read from the window system, if the
 // surface accepts it as a preTransform. None when the user turned pre-rotation off.
+//
+// An unturned display surface is the exception. The frontend's rotation is how the panel is mounted
+// (the DRM panel orientation). With no compositor to leave the turn to, the present always makes it,
+// and the images keep the mode's size (see CreateSwapChain).
 static DisplayRotation WantedSurfaceRotation(const VkSurfaceCapabilitiesKHR& caps, const WindowInfo& wi)
 {
+	if (IsUnturnedDisplaySurface(caps, wi))
+		return static_cast<DisplayRotation>(wi.surface_rotation % 4u);
+
 	if (GSConfig.DisableSwapChainPreRotation)
 		return DisplayRotation::Rot0;
 
@@ -812,7 +853,14 @@ bool VKSwapChain::CreateSwapChain()
 	m_pre_rotation = DisplayRotation::Rot0;
 	VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	VkExtent2D image_size = size;
-	if (m_surface_rotation != DisplayRotation::Rot0)
+	if (m_surface_rotation != DisplayRotation::Rot0 && IsUnturnedDisplaySurface(surface_capabilities, m_window_info))
+	{
+		// VK_KHR_display on a turned panel (WantedSurfaceRotation): `size` is the mode, already the
+		// panel's own orientation. The images take it, the transform stays identity, and the window
+		// takes the size turned, below.
+		m_pre_rotation = m_surface_rotation;
+	}
+	else if (m_surface_rotation != DisplayRotation::Rot0)
 	{
 		const VkExtent2D rotated = RotationSwapsAxes(m_surface_rotation) ? VkExtent2D{size.height, size.width} : size;
 		if (rotated.width >= surface_capabilities.minImageExtent.width &&
@@ -1234,20 +1282,8 @@ bool VKSwapChain::RecreateSurface(const WindowInfo& new_wi)
 	if (m_surface == VK_NULL_HANDLE)
 		return false;
 
-	// The validation layers get angry at us if we don't call this before creating the swapchain.
-	VkBool32 present_supported = VK_TRUE;
-	VkResult res = vkGetPhysicalDeviceSurfaceSupportKHR(GSDeviceVK::GetInstance()->GetPhysicalDevice(),
-		GSDeviceVK::GetInstance()->GetPresentQueueFamilyIndex(), m_surface, &present_supported);
-	if (res != VK_SUCCESS)
-	{
-		LOG_VULKAN_ERROR(res, "vkGetPhysicalDeviceSurfaceSupportKHR failed: ");
+	if (!PresentQueueSupportsSurface(m_surface))
 		return false;
-	}
-	if (!present_supported)
-	{
-		pxFailRel("Recreated surface does not support presenting.");
-		return false;
-	}
 
 	// Finally re-create the swap chain
 	if (!CreateSwapChain())

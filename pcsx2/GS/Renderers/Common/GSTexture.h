@@ -16,6 +16,7 @@ enum class TextureUsage : u8
 	RenderTarget = 2,
 	Feedback     = 4,
 	ShaderWrite  = 8,
+	Stencil      = 16, ///< Depth that carries a stencil aspect, where the device keeps the two apart (FeatureSupport::stencil_on_request).
 };
 
 MARK_ENUM_AS_FLAGS(TextureUsage);
@@ -118,11 +119,19 @@ protected:
 	// different purpose than texture cache ages, do not attempt to merge
 	u32 m_last_frame_used = 0;
 
+	// Which hand-out of this texture from GSDevice::FetchSurface this is; never repeats.
+	u64 m_lease = 0;
+
 	// TakeDestinationAlphaLoop: the frame being counted, its stencil-one draws so far, and whether the
 	// target has taken the loop.
 	u32 m_destination_alpha_frame = 0;
 	u32 m_destination_alpha_draws = 0;
 	bool m_destination_alpha_loop = false;
+
+	// AskForStencil: the frame being counted, its draws that wanted stencil, and whether enough did.
+	u32 m_stencil_frame = 0;
+	u32 m_stencil_draws = 0;
+	bool m_wants_stencil = false;
 
 	bool m_needs_mipmaps_generated = true;
 	ClearValue m_clear_value = {};
@@ -166,6 +175,9 @@ public:
 #endif
 
 	bool Save(const std::string& fn);
+
+	/// The row emitter's mark (GSRowEmitter.h): equal to its generation while a pending row samples this texture.
+	u64 m_row_mark = 0;
 
 	__fi int GetWidth() const { return m_size.x; }
 	__fi int GetHeight() const { return m_size.y; }
@@ -287,6 +299,11 @@ public:
 	__fi u32 GetLastFrameUsed() const { return m_last_frame_used; }
 	void SetLastFrameUsed(u32 frame) { m_last_frame_used = frame; }
 
+	/// A number that changes every time GSDevice::FetchSurface hands the texture out, whether new or
+	/// from the pool, so a claim about its pixels can be tied to one owner's use of it.
+	__fi u64 GetLease() const { return m_lease; }
+	void SetLease(u64 lease) { m_lease = lease; }
+
 	/// GSDevice::FeatureSupport::destination_alpha_loop: counts a stencil-one destination-alpha draw on
 	/// this target and says whether it reads the target in the pass. That holds once the target has had
 	/// more than `min_draws` of them in one frame, and from then on; before that they keep the stencil
@@ -305,6 +322,25 @@ public:
 		return m_destination_alpha_loop;
 	}
 	__fi bool TookDestinationAlphaLoop() const { return m_destination_alpha_loop; }
+
+	/// Depth kept without stencil (stencil_on_request) counts the draws that wanted it; once more than
+	/// min_draws do in one frame, the renderer gives it stencil.
+	void AskForStencil(u32 frame, u32 min_draws)
+	{
+		if (m_stencil_frame != frame)
+		{
+			m_stencil_frame = frame;
+			m_stencil_draws = 0;
+		}
+		m_wants_stencil |= ++m_stencil_draws > min_draws;
+	}
+	__fi bool WantsStencil() const { return m_wants_stencil; }
+	void ForgetStencilRequest()
+	{
+		m_stencil_frame = 0;
+		m_stencil_draws = 0;
+		m_wants_stencil = false;
+	}
 
 	__fi u32 GetClearColor() const { return m_clear_value.color; }
 	__fi float GetClearDepth() const { return m_clear_value.depth; }

@@ -189,6 +189,11 @@ public class NativeApp {
 	 * is running — settings still take effect on the next runVMThread
 	 * because they were pushed to the persistent base settings layer.
 	 *
+	 * With a VM running this queues the apply on the emulator's CPU thread and
+	 * returns without waiting for it: a renderer-init setting can hold that thread
+	 * for seconds. Native calls made after it that also go through the CPU thread
+	 * (live GS pokes, OSD flags, pause and resume) run after the apply.
+	 *
 	 * Some settings need a VM restart (recompiler enables, EE cycle rate);
 	 * the UI layer should flag those.
 	 */
@@ -203,15 +208,6 @@ public class NativeApp {
 	 *  A caller that wants to move the file must wait until this is false. */
 	public static native boolean isEmulogOpen();
 
-	/**
-	 * Live GS-only reconfigure for a running VM. Reloads the whole EmuCore/GS
-	 * section from the base settings layer and pushes it to the GS thread via
-	 * MTGS::ApplySettings WITHOUT the heavier VMManager::ApplySettings (no
-	 * CPU/JIT rebuild). Call after pushing EmuCore/GS keys via setSetting() so
-	 * renderer / hardware-fix / upscaling-fix changes apply mid-game. No-op
-	 * when the GS is closed — the keys still take effect on next launch.
-	 */
-	public static native boolean applyGSSettingsLive();
 	public static native int reloadPatches();
 	public static native boolean reloadTextureReplacements();
 
@@ -557,7 +553,8 @@ public class NativeApp {
 	/** Drop anything staged by {@link #gameIniBeginStage(String)}. */
 	public static native void gameIniClearStage();
 	/** Re-read the running game's INI into the core's game layer after rewriting it, so the
-	 *  commit that follows applies what the file says now. Applies nothing itself. */
+	 *  commit that follows applies what the file says now. Applies nothing itself. Queued on the
+	 *  CPU thread like {@link #commitSettings()}, ahead of that commit. */
 	public static native void reloadGameSettingsLayer();
 
 	/** What auto-tune changed for a game, one readable line each, then the steps it tried without
@@ -1062,10 +1059,6 @@ public class NativeApp {
 	 *  display swap, so emulation keeps running at 100% speed while the
 	 *  on-screen FPS is limited. Applies live. */
 	public static native void setFpsCap(int fps);
-	/** Per-region emulated PS2 vsync rate (NTSC / PAL Hz), applied live without a
-	 *  restart — recomputes the vsync pacer + target speed. Parks the VM briefly
-	 *  (keeps audio alive), so call it off the UI thread (via LiveGsApplyQueue). */
-	public static native void applyFramerateLive(float ntsc, float pal);
 	/** Frame skip: present 1 frame, skip the next N (0 = off). Display-only
 	 *  throttle; applies live. */
 	public static native void setFrameSkip(int skip);
@@ -1116,6 +1109,10 @@ public class NativeApp {
 	 *  Pushed once at startup. The core pairs it with the driver the open Vulkan device is on and
 	 *  posts the "get malisx2" OSD notice at game start when that driver is not malisx2. */
 	public static native void setMaliSX2Offered(boolean offered);
+	/** How the app names the installed malisx2 pack (CustomDriver.maliSX2Label), or "" when none is
+	 *  installed. Pushed with the per-game driver pick before each boot. The core's malisx2 notice
+	 *  says "installed but not selected" instead of "get it" when this is not empty. */
+	public static native void setMaliSX2InstalledPack(String name);
 	/** Affinity Control Mode: 0 off (scheduler decides), 1-6 EE/VU/GS priority orders,
 	 *  7 Performance Cores. Read when the VM boots — set it before runVMThread. */
 	public static native void setAffinityMode(int mode);

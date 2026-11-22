@@ -50,10 +50,6 @@ struct GSMeasurementOverrides
 	/// DriverWorkaround::PreferCachedStreamRingMemory, to price that road on a device without the rule.
 	bool stream_rings_cached = false;
 
-	/// -readback-kick-passes N: in a readback frame, the Vulkan mid-frame kick waits for at least
-	/// N unsubmitted render passes (0 = the shipped spacing). Read once, when the device is created.
-	u32 readback_kick_passes = 0;
-
 	/// -alpha-bit-logic-op: take the alpha-bit logic op (GSAlphaBitLogicOp.h) on any Vulkan device
 	/// with the logicOp feature, not only where a read waits per draw. For checking its pictures
 	/// against the read on a GPU that does not need it.
@@ -76,9 +72,14 @@ struct GSMeasurementOverrides
 	/// does not on a single binary.
 	bool no_dual_source = false;
 
-	/// -runs off: the Vulkan run machine (GSRunsVK.h) is not created, so every draw takes the classic path. The
+	/// -runs off: the Vulkan run program (GSRunEmitterVK.h) is not brought up, so every row is drawn classically. The
 	/// baseline of the machine's A/Bs and of its picture checks.
 	bool runs_off = false;
+
+	/// -panvk-bifrost: take what the Vulkan device does on Mesa's PanVK with a Bifrost Mali (narrow render passes,
+	/// depth without stencil until a draw needs it, DATE without depth reading the target) on any driver, to check
+	/// its pictures on a device that is not one.
+	bool panvk_bifrost = false;
 
 	GSLoopDeclarationSpelling LoopSpelling() const
 	{
@@ -89,7 +90,7 @@ struct GSMeasurementOverrides
 	{
 		return self_read_arm != GSSelfReadArm::Off || declare_depth_loop || loop_create_flag || disable_stencil_buffer ||
 		       alpha_bit_logic_op || date_copy_with_dst_alpha_blend || no_provoking_vertex || no_dual_source ||
-		       stream_rings_cached || runs_off;
+		       stream_rings_cached || runs_off || panvk_bifrost;
 	}
 };
 

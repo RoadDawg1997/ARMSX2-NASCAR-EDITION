@@ -32,11 +32,14 @@ add_pcsx2_test(core_test
 	iop_thread_host_calls_tests.cpp
 	iop_thread_fpcr_tests.cpp
 	iop_thread_threaded_tests.cpp
+	iop_thread_seccomp_tests.cpp
 	pad_input_tests.cpp
+	pad_script_tests.cpp
 	trigger_rest_deadzone_tests.cpp
 	shared_word_tests.cpp
 	audio_stream_tests.cpp
 	IopThreadTestSupport.h
+	SifRestartTestSupport.h
 	StubHostTasks.h
 	sif_pump_tests.cpp
 	sbus_tests.cpp
@@ -51,6 +54,7 @@ add_pcsx2_test(core_test
 	ee_cycle_rate_controller_tests.cpp
 	ee_cycle_rate_eligibility_tests.cpp
 	ee_cycle_rate_sampler_tests.cpp
+	memcard_folder_tests.cpp
 	MockMemoryInterface.h
 	StubHost.cpp
 )
@@ -77,6 +81,7 @@ endif()
 if(USE_VULKAN)
 	target_sources(core_test PRIVATE lsfg_dll_check_tests.cpp)
 	target_sources(core_test PRIVATE lsfg_swap_chain_rebuild_tests.cpp)
+	target_sources(core_test PRIVATE vk_window_system_tests.cpp)
 endif()
 
 # The recompiler differential-test harness drives the arm64 JIT through

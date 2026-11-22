@@ -365,6 +365,8 @@ const char* GpuProfileDetector::BugToString(DriverBug value)
 		case DriverBug::BrokenRoaaDestinationRead: return "BrokenRoaaDestinationRead";
 		case DriverBug::BrokenBlendConstant: return "BrokenBlendConstant";
 		case DriverBug::BrokenImageQuery: return "BrokenImageQuery";
+		case DriverBug::BrokenMixedSamplingDerivatives: return "BrokenMixedSamplingDerivatives";
+		case DriverBug::StallsOnFilteredRunSampling: return "StallsOnFilteredRunSampling";
 		case DriverBug::Count:
 		default: return "Unknown";
 	}

@@ -251,19 +251,26 @@ vec2 get_aa1_triangle_expand_dir(ProcessedVertex v0, ProcessedVertex v1, Process
 // sprite's first and second sampled pixel, so it interpolates to above zero exactly where the pixel
 // shader lowers the coordinate. -65536 on an axis that does not ramp. Positions and coordinates are the
 // raw 12.4 values; an XYOFFSET with a fractional pixel part would move the first pixel, which this ignores.
+//
+// The divisibility tests use no integer division, which GPUs without a divider expand into a long
+// sequence. step is du * 16 / dp rounded through a float divide; it is the step in sixteenths per pixel
+// exactly when it multiplies back to du * 16. Every operand is below 2^20 and so exact in a float, and a
+// quotient below 2^20 that is off by under 8 ulp still rounds to the whole number. The first sample lies
+// (first - p0) sixteenths of a pixel past p0, so its coordinate is on the sixteenth grid when
+// (first - p0) * step is a multiple of 16.
 float sprite_ramp_mark(uint pa, uint pb, uint ua, uint ub, uint corner)
 {
-	bool a_first = pa <= pb;
-	int p0 = int(a_first ? pa : pb);
-	int p1 = int(a_first ? pb : pa);
-	int du = int(a_first ? ub : ua) - int(a_first ? ua : ub);
+	int p0 = int(min(pa, pb));
+	int p1 = int(max(pa, pb));
+	int du = pa <= pb ? int(ub) - int(ua) : int(ua) - int(ub);
 	int dp = p1 - p0;
-	int first = (p0 + 15) >> 4;
-	int extent = ((p1 + 15) >> 4) - first;
-	int prestep = (first << 4) - p0;
-	bool ramps = dp > 0 && du > 0 && ((du * 16) % dp) == 0 && extent > 0 && (extent & (extent - 1)) != 0 &&
-	             ((prestep * du) % dp) == 0;
-	return ramps ? (float(int(corner) - (first << 4)) / 16.0f - 0.5f) : -65536.0f;
+	// The first sampled pixel and the sampled extent, both in 12.4. The extent test is non-zero when the
+	// pixel count is neither zero nor a power of two.
+	int first = (p0 + 15) & ~15;
+	int extent = ((p1 + 15) & ~15) - first;
+	int step = int(float(du << 4) / float(dp) + 0.5f);
+	bool ramps = du > 0 && step * dp == (du << 4) && (extent & (extent - 1)) != 0 && (((first - p0) * step) & 15) == 0;
+	return ramps ? (float(int(corner) - first) / 16.0f - 0.5f) : -65536.0f;
 }
 
 mat2 get_inverse(mat2 mat, float det)
@@ -403,7 +410,7 @@ void main()
 	vtx.t.y = is_bottom ? lt.t.y : vtx.t.y;
 	vtx.ti.yw = is_bottom ? lt.ti.yw : vtx.ti.yw;
 
-	#if VS_TME && VS_FST && !VS_SPRITE_EDGE_CLAMP
+	#if VS_SPRITE_RAMP
 		// An FST sprite does not use ST, so it carries the ramp marks (sprite_ramp_mark, PS_SPRITE_RAMP).
 		{
 			RawVertex r_lt = vertex_buffer[BaseVertex + vid_lt];
@@ -772,9 +779,14 @@ layout(set = 1, binding = 3) uniform texture2D PrimMinTexture;
 #endif
 
 #if ZWRITE && !PS_FEEDBACK_LOOP_IS_NEEDED_DEPTH
-// depth_less would allow conservative early-Z, but floor(z*2^32)*2^-32 can exceed z
-// due to float32 rounding, violating the depth_less contract and silently culling geometry.
-out float gl_FragDepth;
+// The depth written is never above gl_FragCoord.z, so the depth test may run before the
+// shader and again after it. The Z floor, floor(z * 2^32) * 2^-32, is exact in float32:
+// both multiplies only change the exponent (z * 2^32 is at most 2^32, and the floored
+// value is 0 or at least 1, so neither product leaves the normal range), and floor
+// returns a representable integer no greater than its argument. The Z clamp is a min().
+// The PS2 depth tests are GEQUAL and GREATER, under which a lower depth never turns a
+// failing fragment into a passing one.
+layout(depth_less) out float gl_FragDepth;
 #endif
 
 #if NEEDS_TEX

@@ -113,6 +113,10 @@ namespace IopThread
 		inline constexpr u32 AutoEjectTick = 0; // AutoEject::CountDownTicks()
 		inline constexpr u32 MemcardBusyTick = 1; // MemcardBusy::Decrement()
 		inline constexpr u32 VsyncPatchesIop = 2; // Patch::ApplyVsyncPatchesIOP()
+		inline constexpr u32 PadInput = 3; // PadScript::ApplyLatch(arg >> 8)
+
+		/// The job number is the low byte of the item's arg; a job may use the rest.
+		inline constexpr u32 kJobMask = 0xff;
 	} // namespace E2IJob
 
 	/// What each kind of item does on the IOP. The real table calls the IOP's functions; a test swaps
@@ -260,6 +264,13 @@ namespace IopThread
 	/// EE thread. The EE started a SIF DMA on `channel` (0: it armed SIF0 to receive, 1: it sent on SIF1), before its pump runs. A request
 	/// went out, so the lag rules hold the bound tight until the reply (LagRule::Window, IdleOutstanding). A load of the mode in Off.
 	void EeNoteSifStart(u32 channel);
+
+	/// The thread that runs the IOP. A SIF1 transfer of `words` words from the EE has landed in IOP memory at `madr`, and the IOP is
+	/// sending one over SIF0 from `madr` to EE address `ee_dest`. They track the calls to the memory card server (StreamBit::McServerCall).
+	void NoteSif1ToIop(u32 madr, u32 words);
+	void NoteSif0FromIop(u32 madr, u32 words, u32 ee_dest);
+	/// The thread that runs the IOP. Whether a call to the memory card server is in progress at IOP position `iop_pos`.
+	bool McServerCallInProgress(u64 iop_pos);
 
 	/// EE thread. The EE read the status of D5 or D6 (CHCR) with STR set: it polls for the end of a SIF transfer, which may be waiting
 	/// for the IOP (LagRule::Poll).

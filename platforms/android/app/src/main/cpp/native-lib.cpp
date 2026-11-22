@@ -202,6 +202,11 @@ static jmethodID  s_onPadRumble_mid  = nullptr;
 static jmethodID  s_playSound_mid    = nullptr;
 static jmethodID  s_onAutoTuneCommitted_mid = nullptr;
 static jmethodID  s_onAutoTuneDisplayScale_mid = nullptr;
+// NativeApp's file helpers, which the native file system layer calls from any thread.
+static jmethodID  s_openContentUri_mid = nullptr;
+static jmethodID  s_createDirectoryPath_mid = nullptr;
+static jmethodID  s_createFilePath_mid = nullptr;
+static jmethodID  s_findSiblingChds_mid = nullptr;
 
 // The output surface's "Display Resolution (HW scaler)" as auto-tune sees it (AutoTune::DisplayScaler). Kotlin pushes
 // the setting in effect, an auto-tune trial included, and the size it shrinks from (EmulationSurface.applyOutputScale,
@@ -436,6 +441,39 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
                                                 jstring p_szbiosfolder,
                                                 jint p_apiVer) {
     redirect_stdout_to_logcat();
+
+    // Cache JavaVM + NativeApp refs for use from non-Java threads. FindClass on a thread attached
+    // from native code (the CPU thread, the IOP thread) searches only the system class loader and
+    // cannot find app classes. Done first, because the settings code below can already create files
+    // and directories through the file helpers.
+    env->GetJavaVM(&s_jvm);
+    if (jclass local = env->FindClass("kr/co/iefriends/pcsx2/NativeApp")) {
+        s_NativeApp_class = static_cast<jclass>(env->NewGlobalRef(local));
+        env->DeleteLocalRef(local);
+        s_vmSetPaused_mid = env->GetStaticMethodID(s_NativeApp_class, "vmSetPaused", "(Z)V");
+        s_onPadRumble_mid = env->GetStaticMethodID(s_NativeApp_class, "onPadRumble", "(III)V");
+        s_playSound_mid   = env->GetStaticMethodID(s_NativeApp_class, "playSound", "(Ljava/lang/String;)V");
+        s_onAutoTuneCommitted_mid = env->GetStaticMethodID(s_NativeApp_class, "onAutoTuneCommitted",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
+        s_onAutoTuneDisplayScale_mid = env->GetStaticMethodID(s_NativeApp_class, "onAutoTuneDisplayScale", "(I)V");
+
+        const auto bind_file_helper = [env](const char* name, const char* sig) {
+            jmethodID mid = env->GetStaticMethodID(s_NativeApp_class, name, sig);
+            if (mid == nullptr) {
+                env->ExceptionClear();
+                Console.ErrorFmt("NativeApp.{}{} not found; the file system cannot call it.", name, sig);
+            }
+            return mid;
+        };
+        s_openContentUri_mid = bind_file_helper("openContentUri", "(Ljava/lang/String;)I");
+        s_createDirectoryPath_mid = bind_file_helper("createDirectoryPath", "(Ljava/lang/String;)Z");
+        s_createFilePath_mid = bind_file_helper("createFilePath", "(Ljava/lang/String;)Z");
+        s_findSiblingChds_mid = bind_file_helper("findSiblingChds", "(Ljava/lang/String;)[Ljava/lang/String;");
+    } else {
+        env->ExceptionClear();
+        Console.Error("NativeApp class not found; callbacks and file helpers are unavailable.");
+    }
+
     // p_szpath is the user's chosen system folder (memcards, savestates,
     // configs land here) when set up via the wizard; falls back to the
     // app's externalFilesDir when unset. p_szbiosfolder is always the
@@ -630,19 +668,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
         si.Save();
 
     VMManager::Internal::LoadStartupSettings();
-
-    // Cache JavaVM + NativeApp refs for use from non-Java threads.
-    env->GetJavaVM(&s_jvm);
-    if (jclass local = env->FindClass("kr/co/iefriends/pcsx2/NativeApp")) {
-        s_NativeApp_class = static_cast<jclass>(env->NewGlobalRef(local));
-        env->DeleteLocalRef(local);
-        s_vmSetPaused_mid = env->GetStaticMethodID(s_NativeApp_class, "vmSetPaused", "(Z)V");
-        s_onPadRumble_mid = env->GetStaticMethodID(s_NativeApp_class, "onPadRumble", "(III)V");
-        s_playSound_mid   = env->GetStaticMethodID(s_NativeApp_class, "playSound", "(Ljava/lang/String;)V");
-        s_onAutoTuneCommitted_mid = env->GetStaticMethodID(s_NativeApp_class, "onAutoTuneCommitted",
-            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
-        s_onAutoTuneDisplayScale_mid = env->GetStaticMethodID(s_NativeApp_class, "onAutoTuneDisplayScale", "(I)V");
-    }
 
     // Bind the JNI-backed HTTP downloader's class + method IDs while we
     // still have a Java-thread env. Worker threads spawned from
@@ -1822,8 +1847,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAspectRatio(JNIEnv *env, jclass clazz,
         return;
 
     Host::SetBaseStringSettingValue("EmuCore/GS", "AspectRatio", name);
-    EmuConfig.GS.AspectRatio = static_cast<AspectRatioType>(ratio);
-    EmuConfig.CurrentAspectRatio = static_cast<AspectRatioType>(ratio);
+    // EmuConfig is the CPU thread's, and a commit queued before this may be reloading it there.
+    Host::RunOnCPUThread([ratio]() {
+        EmuConfig.GS.AspectRatio = static_cast<AspectRatioType>(ratio);
+        EmuConfig.CurrentAspectRatio = static_cast<AspectRatioType>(ratio);
+    });
 }
 
 // FMV Aspect Ratio override — applied only while an FMV/MPEG is playing (Counters.cpp
@@ -1842,7 +1870,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setFmvAspectRatio(JNIEnv *env, jclass clazz
         return;
 
     Host::SetBaseStringSettingValue("EmuCore/GS", "FMVAspectRatioSwitch", name);
-    EmuConfig.GS.FMVAspectRatioSwitch = static_cast<FMVAspectRatioSwitchType>(ratio);
+    // On the CPU thread, as in setAspectRatio.
+    Host::RunOnCPUThread([ratio]() {
+        EmuConfig.GS.FMVAspectRatioSwitch = static_cast<FMVAspectRatioSwitchType>(ratio);
+    });
 }
 
 extern "C"
@@ -2303,18 +2334,17 @@ static void LogAndroidGSSettings(const char* reason)
 // which, besides being weaker than owning the thread, only ever covered the ApplySettings call
 // and not the EmuConfig.GS mutation the callers did first (that reload rewrites the struct
 // wholesale, std::string Adapter included, so a concurrent reader could see it mid-flight).
-static bool ApplyLiveGSSettings(const char* reason, std::function<bool()> mutate)
+//
+// Queued, not waited for, for the reason given at commitSettings: the CPU thread can be held for
+// seconds behind a GS device rebuild, and the callers are the UI thread.
+static void ApplyLiveGSSettings(const char* reason, std::function<void()> mutate)
 {
-    bool ok = false;
-    Host::RunOnCPUThread([&ok, reason, &mutate]() {
-        ok = !mutate || mutate();
-        if (!ok)
-            return;
+    Host::RunOnCPUThread([reason, mutate = std::move(mutate)]() {
+        mutate();
         if (MTGS::IsOpen())
             MTGS::ApplySettings();
         LogAndroidGSSettings(reason);
-    }, /*block=*/true);
-    return ok;
+    });
 }
 
 // Generic setting writer — mirror of pcsx2-qt's settings save path.
@@ -2364,152 +2394,48 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setSetting(JNIEnv *env, jclass clazz,
     }
 }
 
-// Push queued setSetting writes into the running VM. Idempotent — safe
-// to call multiple times. Logs the resolved EmuCore.Speedhacks state
-// for plumbing-verification (one-line check from logcat).
+// Push queued setSetting writes into the running VM and save them. Idempotent — safe to call
+// multiple times.
+//
+// ApplySettings mutates state the EE/MTVU/MTGS pipeline reads concurrently (JIT cache flushes, GS
+// reconfig), so it runs on the CPU thread, as upstream does: the queue drains from
+// PollInputOnCPUThread() at the vsync boundary, which is the re-entry point
+// CheckForCPUConfigChanges() is written for, and from the run loop while paused.
+//
+// This returns once the work is queued, without waiting for it. The callers are the UI thread, and
+// the apply can hold the CPU thread for as long as the GS thread takes to rebuild its device: a
+// renderer-init setting (Use Blit Swap Chain, Disable Shader Cache, ...) reopens the GS device, and
+// with a hardware download mode that reads GS memory from the EE thread (Unsynchronized,
+// Asynchronous) MTGS::ApplySettings waits for that reopen, seconds with the shader cache off. A
+// caller waiting for it would freeze the in-game menu as long. The CPU thread runs its tasks in order, so whatever the caller queues after this (OSD
+// flags, live GS pokes, the resume when the menu closes) runs after the apply. With no CPU thread
+// (before a boot) the work runs here, before this returns.
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_commitSettings(JNIEnv *env, jclass clazz) {
-    // ApplySettings mutates state the EE/MTVU/MTGS pipeline reads concurrently (JIT cache
-    // flushes, GS reconfig), so it must not race a RUNNING VM. This used to be enforced by
-    // parking the VM (ScopedVMPause) and then mutating from the UI thread anyway. Marshalling
-    // onto the CPU thread is strictly stronger and is what upstream does: the queue drains from
-    // PollInputOnCPUThread() at the vsync boundary, which is exactly the re-entry point
-    // CheckForCPUConfigChanges() is written for ("we're still executing the cpu when this
-    // function is called"), and it defers the recompiler swap to the next Execute() itself.
-    //
-    // The park is therefore not just redundant here, it is unusable: ScopedVMPause waits for
-    // s_execute_exit, which the run loop only sets AFTER Execute() returns, so a park attempted
-    // from inside a CPU-thread task would spin its full 3 s watchdog and then report failure.
-    //
-    // Blocking so the settings-applied ordering the UI relies on (commit, then read back state)
-    // is preserved, and so the log line below reports post-apply values as it always has.
     Host::RunOnCPUThread([]() {
         if (VMManager::HasValidVM())
             VMManager::ApplySettings();
         if (MTGS::IsOpen())
             MTGS::ApplySettings();
-    }, /*block=*/true);
-    SaveBaseSettingsIfDirty();
-    LogAndroidGSSettings("commit");
+        SaveBaseSettingsIfDirty();
+        LogAndroidGSSettings("commit");
 
-    // Plumbing roundtrip verifier — once the UI starts pushing real
-    // settings, watch logcat for these to confirm the write landed.
-    // Unary `+` promotes each bit-field to a plain int, since C++ doesn't
-    // allow forwarding references (T&&) to bind to bit-fields.
-    Console.WriteLnFmt(
-        "Settings commit: vuThread={} EECycleRate={} EECycleSkip={} "
-        "vu1Instant={} fastCDVD={} vuFlagHack={} iopThread={} iopThreadLag={}",
-        +EmuConfig.Speedhacks.vuThread,
-        +EmuConfig.Speedhacks.EECycleRate,
-        +EmuConfig.Speedhacks.EECycleSkip,
-        +EmuConfig.Speedhacks.vu1Instant,
-        +EmuConfig.Speedhacks.fastCDVD,
-        +EmuConfig.Speedhacks.vuFlagHack,
-        +EmuConfig.Speedhacks.iopThread,
-        EmuConfig.Speedhacks.iopThreadLag);
-}
-
-// Generic live GS reconfigure. Reloads the whole EmuCore/GS section from the
-// base settings layer into EmuConfig.GS, re-applies the user-hack masks the
-// core applies on load, then pushes the change to the GS thread — WITHOUT the
-// full VMManager::ApplySettings() CPU/JIT rebuild that commitSettings() does
-// (that heavy path is what caused ANRs when settings were scrubbed live). This
-// lets every renderer / hardware-fix / upscaling-fix setting apply mid-game,
-// the same way the desktop pause menu's GS settings do. The UI writes the
-// changed keys via setSetting() first, then calls this.
-extern "C"
-JNIEXPORT jboolean JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_applyGSSettingsLive(JNIEnv *env, jclass clazz) {
-    // CRITICAL (Android stability): reloading the WHOLE EmuCore/GS section pulls
-    // the device-identity fields (Renderer/Adapter/…) from the base layer too —
-    // e.g. base "Auto" vs the already-resolved OpenGL the VM is running on. Any
-    // mismatch makes GSUpdateConfig take the full device teardown/recreate path
-    // (GSreopen(true,true), gated by GSOptions::RestartOptionsAreEqual), which is
-    // the one GS operation that crashes mid-game here. The narrow live setters
-    // (renderTvShader, …) are safe precisely because they never touch these.
-    // So snapshot the live device fields, reload, then restore them — only the
-    // safe in-place render / hardware-fix / upscaling-fix options end up changing.
-    //
-    // All of this runs on the CPU thread: EmuConfig is its state, LoadSave() rewrites the whole
-    // GS struct (std::string Adapter included) rather than poking one field, and the reconfigure
-    // it feeds pushes to the single-producer MTGS ring. The previous version mutated here on the
-    // UI thread and only parked the VM around the MTGS push at the end, leaving the reload itself
-    // unsynchronised against the EE.
-    return ApplyLiveGSSettings("ui_render_live", [&]() {
-        const auto saved_renderer        = EmuConfig.GS.Renderer;
-        const auto saved_adapter         = EmuConfig.GS.Adapter;
-        const auto saved_debug_device    = EmuConfig.GS.UseDebugDevice;
-        const auto saved_blit_swap       = EmuConfig.GS.UseBlitSwapChain;
-        const auto saved_no_shader_cache = EmuConfig.GS.DisableShaderCache;
-        const auto saved_no_fb_fetch     = EmuConfig.GS.DisableFramebufferFetch;
-        const auto saved_mali_fbfetch    = EmuConfig.GS.ForceMaliFramebufferFetch;
-        const auto saved_no_vs_expand    = EmuConfig.GS.DisableVertexShaderExpand;
-        const auto saved_tex_barriers    = EmuConfig.GS.OverrideTextureBarriers;
-        const auto saved_depth_feedback  = EmuConfig.GS.DepthFeedbackMode;
-        const auto saved_back_thread     = EmuConfig.GS.BackThread;
-        const auto saved_hwaa1           = EmuConfig.GS.HWAA1;
-        const auto saved_exclusive_fs    = EmuConfig.GS.ExclusiveFullscreenControl;
-        const auto saved_sw_threads      = EmuConfig.GS.SWExtraThreads;
-        const auto saved_sw_threads_h    = EmuConfig.GS.SWExtraThreadsHeight;
-
-        {
-            auto lock = Host::GetSettingsLock();
-            SettingsInterface* si = Host::GetSettingsInterface();
-            if (!si)
-                return false;
-            SettingsLoadWrapper slw(*si);
-            EmuConfig.GS.LoadSave(slw);
-
-            // Mirror VMManager::LoadCoreSettings: the reload above took the mask from
-            // whichever layer answered first, so re-derive the per-game claims or
-            // MaskUserHacks() below strips a hack the player set for this game.
-            if (const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer())
-                EmuConfig.GS.UserHackOverrides |= ComputePerGameOverrides(*game_layer).gs_hacks;
-        }
-
-        // Restore everything RestartOptionsAreEqual() compares (+ the SW-thread quick-
-        // reopen pair) so a live apply can NEVER trigger a device/renderer recreate.
-        EmuConfig.GS.Renderer                   = saved_renderer;
-        EmuConfig.GS.Adapter                    = saved_adapter;
-        EmuConfig.GS.UseDebugDevice             = saved_debug_device;
-        EmuConfig.GS.UseBlitSwapChain           = saved_blit_swap;
-        EmuConfig.GS.DisableShaderCache         = saved_no_shader_cache;
-        EmuConfig.GS.DisableFramebufferFetch    = saved_no_fb_fetch;
-        EmuConfig.GS.ForceMaliFramebufferFetch  = saved_mali_fbfetch;
-        EmuConfig.GS.DisableVertexShaderExpand  = saved_no_vs_expand;
-        EmuConfig.GS.OverrideTextureBarriers    = saved_tex_barriers;
-        EmuConfig.GS.DepthFeedbackMode          = saved_depth_feedback;
-        EmuConfig.GS.BackThread                 = saved_back_thread;
-        EmuConfig.GS.HWAA1                       = saved_hwaa1;
-        EmuConfig.GS.ExclusiveFullscreenControl = saved_exclusive_fs;
-        EmuConfig.GS.SWExtraThreads             = saved_sw_threads;
-        EmuConfig.GS.SWExtraThreadsHeight       = saved_sw_threads_h;
-
-        // Mirror VMManager::LoadCoreSettings: strip user/upscaling hacks when their
-        // master toggles are off so stale keys can't leak through into the renderer.
-        EmuConfig.GS.MaskUserHacks();
-        EmuConfig.GS.MaskUpscalingHacks();
-
-        // Re-apply the active game's GameDB GS hardware fixes. LoadSave above only
-        // restored the user/base layer; per-game fixes (e.g. True Crime's
-        // textureInsideRT) apply on TOP of it in VMManager::ApplyGameFixes. Without
-        // this, a live GS settings change would wipe them and the game would break
-        // until the next launch. Mirrors ApplyGameFixes' GS portion.
-        if (const GameDatabaseSchema::GameEntry* game = GameDatabase::findGame(VMManager::GetDiscSerial()))
-        {
-            PerGameOverrides overrides;
-            {
-                auto lock = Host::GetSettingsLock();
-                if (const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer())
-                    overrides = ComputePerGameOverrides(*game_layer);
-            }
-
-            game->applyGSHardwareFixes(EmuConfig.GS, overrides);
-            EmuConfig.GS.MaskUpscalingHacks();
-        }
-        return true;
-    }) ? JNI_TRUE : JNI_FALSE;
+        // Plumbing roundtrip verifier: the post-apply values, one line in logcat.
+        // Unary `+` promotes each bit-field to a plain int, since C++ doesn't
+        // allow forwarding references (T&&) to bind to bit-fields.
+        Console.WriteLnFmt(
+            "Settings commit: vuThread={} EECycleRate={} EECycleSkip={} "
+            "vu1Instant={} fastCDVD={} vuFlagHack={} iopThread={} iopThreadLag={}",
+            +EmuConfig.Speedhacks.vuThread,
+            +EmuConfig.Speedhacks.EECycleRate,
+            +EmuConfig.Speedhacks.EECycleSkip,
+            +EmuConfig.Speedhacks.vu1Instant,
+            +EmuConfig.Speedhacks.fastCDVD,
+            +EmuConfig.Speedhacks.vuFlagHack,
+            +EmuConfig.Speedhacks.iopThread,
+            EmuConfig.Speedhacks.iopThreadLag);
+    });
 }
 
 extern "C"
@@ -2557,35 +2483,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_reloadTextureReplacements(JNIEnv *env, jcla
         g_gs_renderer->PurgeTextureCache(true, false, true);
     });
     return JNI_TRUE;
-}
-
-extern "C"
-JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_applyFramerateLive(JNIEnv *env, jclass clazz,
-                                                        jfloat p_ntsc, jfloat p_pal) {
-    // Per-region NTSC/PAL emulated vsync rate, applied LIVE (no restart) so the
-    // Frame Rate sliders behave like NetherSX2. The pacer caches the rate in
-    // vSyncInfo, so a plain EmuConfig write does nothing until UpdateVSyncRate
-    // recomputes it — mirroring VMManager::CheckForGSConfigChanges' framerate
-    // branch (UpdateVSyncRate + UpdateTargetSpeed).
-    //
-    // CRITICAL: UpdateVSyncRate rewrites the EE-thread hsync/vsync counters and
-    // calls cpuRcntSet(), so it MUST run with the CPU/MTGS/MTVU threads parked —
-    // a raw JNI-thread call would race the emulation loop. ScopedVMPause(false)
-    // parks them but keeps the audio stream alive (avoids the low-latency-stream
-    // reclaim that muted audio on longer parks). Invoked off the UI thread via
-    // LiveGsApplyQueue, which also coalesces rapid slider drags.
-    if (!VMManager::HasValidVM())
-        return;
-    ScopedVMPause vm_pause(false);
-    if (!vm_pause.parked())
-        return;
-    EmuConfig.GS.FramerateNTSC = static_cast<float>(p_ntsc);
-    EmuConfig.GS.FrameratePAL = static_cast<float>(p_pal);
-    UpdateVSyncRate(true);
-    VMManager::UpdateTargetSpeed();
-    Console.WriteLnFmt("@@ANDROID_FRAMERATE@@ ntsc={} pal={}",
-        EmuConfig.GS.FramerateNTSC, EmuConfig.GS.FrameratePAL);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -3507,7 +3404,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderUpscalemultiplier(JNIEnv *env, jclass
     Host::SetBaseFloatSettingValue("EmuCore/GS", "upscale_multiplier", p_value);
     ApplyLiveGSSettings("upscale", [p_value]() {
         EmuConfig.GS.UpscaleMultiplier = p_value;
-        return true;
     });
 }
 
@@ -3519,7 +3415,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderMipmap(JNIEnv *env, jclass clazz,
     Host::SetBaseBoolSettingValue("EmuCore/GS", "hw_mipmap", enabled);
     ApplyLiveGSSettings("hw_mipmap", [enabled]() {
         EmuConfig.GS.HWMipmap = enabled;
-        return true;
     });
 }
 
@@ -3532,7 +3427,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderHalfpixeloffset(JNIEnv *env, jclass c
     Host::SetBaseIntSettingValue("EmuCore/GS", "UserHacks_HalfPixelOffset", value);
     ApplyLiveGSSettings("half_pixel_offset", [value]() {
         EmuConfig.GS.UserHacks_HalfPixelOffset = static_cast<GSHalfPixelOffset>(value);
-        return true;
     });
 }
 
@@ -3544,7 +3438,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderTvShader(JNIEnv *env, jclass clazz,
     Host::SetBaseIntSettingValue("EmuCore/GS", "TVShader", value);
     ApplyLiveGSSettings("tv_shader", [value]() {
         EmuConfig.GS.TVShader = static_cast<u8>(value);
-        return true;
     });
 }
 
@@ -3574,7 +3467,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderShadeBoost(JNIEnv *env, jclass clazz,
         EmuConfig.GS.ShadeBoost_Contrast = static_cast<u8>(contrast);
         EmuConfig.GS.ShadeBoost_Saturation = static_cast<u8>(saturation);
         EmuConfig.GS.ShadeBoost_Gamma = static_cast<u8>(gamma);
-        return true;
     });
 }
 
@@ -3587,7 +3479,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderPreloading(JNIEnv *env, jclass clazz,
     Host::SetBaseIntSettingValue("EmuCore/GS", "texture_preloading", value);
     ApplyLiveGSSettings("texture_preloading", [value]() {
         EmuConfig.GS.TexturePreloading = static_cast<TexturePreloadingLevel>(value);
-        return true;
     });
 }
 
@@ -3825,9 +3716,12 @@ std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
     // swapchain creation, while a null handle reaches vkCreateAndroidSurfaceKHR
     // and SIGSEGVs inside the loader (RefBase::incStrong on null+4). The next
     // onNativeSurfaceChanged triggers MTGS::UpdateDisplayWindow and we
-    // re-acquire the real surface.
+    // re-acquire the real surface. pending_type says the surface will come
+    // back, so a GS device opened in this window still gets Android window
+    // support and can present on it later.
     if (!s_window) {
         _windowInfo.type = WindowInfo::Type::Surfaceless;
+        _windowInfo.pending_type = WindowInfo::Type::Android;
         return _windowInfo;
     }
 
@@ -3950,34 +3844,58 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setMaliSX2Offered(JNIEnv*, jclass, jboolean
     s_gpu_offers_malisx2.store(offered == JNI_TRUE, std::memory_order_relaxed);
 }
 
-// The "get malisx2" notice: a Mali GPU the driver list offers malisx2 for is running the Vulkan
-// hardware renderer on some other driver (Arm's own or another pack). Posted through the OSD with the
-// unsafe-settings warnings' duration, keyed so a repeat refreshes the one message. The driver is read
-// off the open Vulkan device, not from the selected pack, because a pack that fails to load falls back
-// to Arm's driver silently. So it is only known once the device is open: this runs from OnVMStarted and
-// from the game-change call that follows the game's program starting.
+// How the app names the installed malisx2 pack ("malisx2 0.4.1"), empty when none is installed. Packs
+// are installed and deleted while the app runs, so the app pushes it with the per-game driver pick
+// (applyRendererPrefs) before each boot. Read by the notice below.
+static std::mutex s_installed_malisx2_pack_mutex;
+static std::string s_installed_malisx2_pack;
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setMaliSX2InstalledPack(JNIEnv* env, jclass, jstring name) {
+    std::string pack = GetJavaString(env, name);
+    std::lock_guard<std::mutex> lock(s_installed_malisx2_pack_mutex);
+    s_installed_malisx2_pack = std::move(pack);
+}
+
+// The malisx2 notice: a Mali GPU the driver list offers malisx2 for is running the Vulkan hardware
+// renderer on some other driver (Arm's own or another pack). What it says depends on what the user
+// has (GSDriverReport::MaliSX2NoticeFor): a malisx2 pack installed but not selected, no pack
+// installed, or another pack selected. Posted through the OSD with the unsafe-settings warnings'
+// duration, keyed so a repeat refreshes the one message. A toast has no button, so the text says
+// where to switch; the driver list in Settings > Renderer has the switch itself. The driver is read
+// off the open Vulkan device, not from the selected pack, because a pack that fails to load falls
+// back to Arm's driver silently. So it is only known once the device is open: this runs from
+// OnVMStarted and from the game-change call that follows the game's program starting.
 //
-// Not shown when a malisx2 pack is selected: malisx2 needs a recent Mali kernel driver, and on an older
-// one it fails to open and the device ends up on Arm's driver, so the notice would tell the user to
-// download what they already have. The selected pack is the driver request the Vulkan library was
-// loaded with (Vulkan::GetCustomDriverStatus), which the app sets per game in applyRendererPrefs
-// before each boot.
+// Not shown when a malisx2 pack is selected: malisx2 needs a recent Mali kernel driver, and on an
+// older one it fails to open and the device ends up on Arm's driver, so the notice would tell the
+// user to get or switch to what they already have. The selected pack is the driver request the
+// Vulkan library was loaded with (Vulkan::GetCustomDriverStatus), which the app sets per game in
+// applyRendererPrefs before each boot.
 static void PostMaliSX2NoticeIfDue() {
+    using namespace GSDriverReport;
     const bool hardware = GSIsHardwareRenderer();
     const bool offered = s_gpu_offers_malisx2.load(std::memory_order_relaxed);
-    const GSDriverReport::ActiveVulkanDriver driver = GSDriverReport::GetActiveVulkanDriver();
+    const ActiveVulkanDriver driver = GetActiveVulkanDriver();
     const Vulkan::CustomDriverStatus pack = Vulkan::GetCustomDriverStatus();
-    const bool malisx2_pack_selected = pack.requested && GSDriverReport::IsMaliSX2Pack(pack.dir, pack.name);
+    const SelectedVulkanPack selected = !pack.requested ? SelectedVulkanPack::System
+        : IsMaliSX2Pack(pack.dir, pack.name) ? SelectedVulkanPack::MaliSX2 : SelectedVulkanPack::Other;
+    std::string installed_pack;
+    {
+        std::lock_guard<std::mutex> lock(s_installed_malisx2_pack_mutex);
+        installed_pack = s_installed_malisx2_pack;
+    }
 
-    if (!GSDriverReport::ShouldWarnMaliSX2(hardware, offered, driver, malisx2_pack_selected)) {
-        if (GSDriverReport::ShouldWarnMaliSX2(hardware, offered, driver, false))
+    const MaliSX2Notice notice = MaliSX2NoticeFor(hardware, offered, driver, selected, !installed_pack.empty());
+    if (notice == MaliSX2Notice::None) {
+        if (hardware && offered && driver == ActiveVulkanDriver::Other && selected == SelectedVulkanPack::MaliSX2)
             Console.WriteLn("Android: malisx2 pack selected but the Vulkan device is on another driver "
-                            "(pack failed to load?), not posting the get-malisx2 notice.");
+                            "(pack failed to load?), not posting the malisx2 notice.");
         return;
     }
     Host::AddIconOSDMessage("armsx2_mali_driver_notice", ICON_FA_CIRCLE_EXCLAMATION,
-        "Incompatible driver selected. Please download the malisx2 driver",
-        Host::OSD_WARNING_DURATION);
+        MaliSX2NoticeText(notice, installed_pack), Host::OSD_WARNING_DURATION);
 }
 
 void Host::OnGameChanged(const std::string& title, const std::string& elf_override, const std::string& disc_path,
@@ -4037,24 +3955,50 @@ static void CloseCPUThreadQueue()
         function();
 }
 
+// The calling thread's JNIEnv for a NativeApp file helper, or null. SDL attaches a thread created
+// in native code on its first call here and detaches it when the thread exits. A pending exception
+// is cleared, since no JNI call may be made with one.
+static JNIEnv* GetJavaFileEnv(jmethodID mid)
+{
+    if (s_NativeApp_class == nullptr || mid == nullptr)
+        return nullptr;
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    if (env != nullptr && env->ExceptionCheck())
+        env->ExceptionClear();
+    return env;
+}
+
+// Calls one of NativeApp's static (String) -> boolean file helpers. False on any JNI failure,
+// with no exception left pending and no local reference left behind.
+static bool CallJavaFileBooleanMethod(jmethodID mid, const char* path)
+{
+    JNIEnv* env = GetJavaFileEnv(mid);
+    if (env == nullptr)
+        return false;
+    bool ok = false;
+    jstring j_path = env->NewStringUTF(path);
+    if (j_path != nullptr)
+    {
+        ok = (env->CallStaticBooleanMethod(s_NativeApp_class, mid, j_path) == JNI_TRUE);
+        env->DeleteLocalRef(j_path);
+    }
+    if (env->ExceptionCheck())
+    {
+        env->ExceptionClear();
+        ok = false;
+    }
+    return ok;
+}
+
 std::vector<std::string> FileSystem::FindContentChdSiblings(const char* filename)
 {
     std::vector<std::string> files;
-    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
-    if (!env)
+    JNIEnv* env = GetJavaFileEnv(s_findSiblingChds_mid);
+    if (env == nullptr)
         return files;
 
-    jclass native_app = env->FindClass("kr/co/iefriends/pcsx2/NativeApp");
-    if (!native_app || env->ExceptionCheck())
-    {
-        env->ExceptionClear();
-        if (native_app)
-            env->DeleteLocalRef(native_app);
-        return files;
-    }
-    jmethodID method = env->GetStaticMethodID(native_app, "findSiblingChds", "(Ljava/lang/String;)[Ljava/lang/String;");
-    jstring path = method ? env->NewStringUTF(filename) : nullptr;
-    auto siblings = path ? static_cast<jobjectArray>(env->CallStaticObjectMethod(native_app, method, path)) : nullptr;
+    jstring path = env->NewStringUTF(filename);
+    auto siblings = path ? static_cast<jobjectArray>(env->CallStaticObjectMethod(s_NativeApp_class, s_findSiblingChds_mid, path)) : nullptr;
     if (env->ExceptionCheck())
         env->ExceptionClear();
     else if (siblings)
@@ -4083,21 +4027,27 @@ std::vector<std::string> FileSystem::FindContentChdSiblings(const char* filename
         env->DeleteLocalRef(siblings);
     if (path)
         env->DeleteLocalRef(path);
-    env->DeleteLocalRef(native_app);
     return files;
 }
 
 int FileSystem::OpenFDFileContent(const char* filename)
 {
-    auto *env = static_cast<JNIEnv *>(SDL_GetAndroidJNIEnv());
-    if(env == nullptr) {
+    JNIEnv* env = GetJavaFileEnv(s_openContentUri_mid);
+    if (env == nullptr)
         return -1;
-    }
-    jclass NativeApp = env->FindClass("kr/co/iefriends/pcsx2/NativeApp");
-    jmethodID openContentUri = env->GetStaticMethodID(NativeApp, "openContentUri", "(Ljava/lang/String;)I");
 
+    int fd = -1;
     jstring j_filename = env->NewStringUTF(filename);
-    int fd = env->CallStaticIntMethod(NativeApp, openContentUri, j_filename);
+    if (j_filename != nullptr)
+    {
+        fd = env->CallStaticIntMethod(s_NativeApp_class, s_openContentUri_mid, j_filename);
+        env->DeleteLocalRef(j_filename);
+    }
+    if (env->ExceptionCheck())
+    {
+        env->ExceptionClear();
+        fd = -1;
+    }
     return fd;
 }
 
@@ -4106,39 +4056,7 @@ bool FileSystem::CreateDirectoryViaJava(const char* path)
     // Bridges to NativeApp.createDirectoryPath (java.io.File.mkdirs). Used as a
     // fallback when libc mkdir() is denied on FUSE-emulated external storage,
     // which is what makes folder memory cards work on a custom data folder.
-    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
-    if (env == nullptr)
-        return false;
-    jclass NativeApp = env->FindClass("kr/co/iefriends/pcsx2/NativeApp");
-    if (NativeApp == nullptr)
-    {
-        env->ExceptionClear();
-        return false;
-    }
-    jmethodID mid = env->GetStaticMethodID(NativeApp, "createDirectoryPath", "(Ljava/lang/String;)Z");
-    if (mid == nullptr)
-    {
-        env->ExceptionClear();
-        env->DeleteLocalRef(NativeApp);
-        return false;
-    }
-    // Called many times during folder-card use, so free every local ref and clear
-    // any pending JNI exception on all paths — the Java side swallows its own, but
-    // a JNI-layer throw must not leak a local ref or an exception onto the next call.
-    bool ok = false;
-    jstring j_path = env->NewStringUTF(path);
-    if (j_path != nullptr)
-    {
-        ok = (env->CallStaticBooleanMethod(NativeApp, mid, j_path) == JNI_TRUE);
-        if (env->ExceptionCheck())
-        {
-            env->ExceptionClear();
-            ok = false;
-        }
-        env->DeleteLocalRef(j_path);
-    }
-    env->DeleteLocalRef(NativeApp);
-    return ok;
+    return CallJavaFileBooleanMethod(s_createDirectoryPath_mid, path);
 }
 
 bool FileSystem::CreateFileViaJava(const char* path)
@@ -4147,37 +4065,7 @@ bool FileSystem::CreateFileViaJava(const char* path)
     // when libc fopen(O_CREAT) is denied on FUSE-emulated external storage; once
     // the empty file exists the native truncating write that follows succeeds,
     // which is what makes NEW folder-card saves work on a custom data folder.
-    // Mirrors CreateDirectoryViaJava above; same local-ref/exception discipline.
-    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
-    if (env == nullptr)
-        return false;
-    jclass NativeApp = env->FindClass("kr/co/iefriends/pcsx2/NativeApp");
-    if (NativeApp == nullptr)
-    {
-        env->ExceptionClear();
-        return false;
-    }
-    jmethodID mid = env->GetStaticMethodID(NativeApp, "createFilePath", "(Ljava/lang/String;)Z");
-    if (mid == nullptr)
-    {
-        env->ExceptionClear();
-        env->DeleteLocalRef(NativeApp);
-        return false;
-    }
-    bool ok = false;
-    jstring j_path = env->NewStringUTF(path);
-    if (j_path != nullptr)
-    {
-        ok = (env->CallStaticBooleanMethod(NativeApp, mid, j_path) == JNI_TRUE);
-        if (env->ExceptionCheck())
-        {
-            env->ExceptionClear();
-            ok = false;
-        }
-        env->DeleteLocalRef(j_path);
-    }
-    env->DeleteLocalRef(NativeApp);
-    return ok;
+    return CallJavaFileBooleanMethod(s_createFilePath_mid, path);
 }
 
 extern "C"
@@ -5917,8 +5805,8 @@ int Host::LocaleSensitiveCompare(std::string_view lhs, std::string_view rhs)
 // are `bool : 1` bit-fields (Config.h GSOptions BITFIELD32) sharing storage with the GS
 // device-restart flags — DisableFramebufferFetch, ForceMaliFramebufferFetch, UseBlitSwapChain,
 // DisableShaderCache. A bit-field assignment is a read-modify-write of that whole storage unit, so a UI-thread OSD toggle racing the CPU thread
-// can write back a stale copy of its neighbours. Lose applyGSSettingsLive's restore of one of
-// those and RestartOptionsAreEqual() goes false, which takes GSUpdateConfig down the full device
+// can write back a stale copy of its neighbours. Flip one of those and RestartOptionsAreEqual()
+// goes false, which takes GSUpdateConfig down the full device
 // teardown path — the one GS operation that crashes mid-game here. An OSD toggle is emphatically
 // not worth that, hence the hop.
 static void applyOsdSetting(std::function<void()> mutate)
@@ -6771,7 +6659,8 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameIniClaim(JNIEnv* env, jclass, jstring p
 // Re-read the running game's per-game file into the game layer, after the app rewrote it. The
 // layer is otherwise only read at boot, so the commit that follows would still apply what the
 // file said then -- values, and which database entries the player had taken back. Applies
-// nothing itself; the caller's commit does.
+// nothing itself; the caller's commit does. Queued, not waited for (see commitSettings): the
+// commit the caller queues next runs after it.
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_reloadGameSettingsLayer(JNIEnv*, jclass) {
     if (!VMManager::HasValidVM())
@@ -6780,7 +6669,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_reloadGameSettingsLayer(JNIEnv*, jclass) {
     Host::RunOnCPUThread([]() {
         if (VMManager::HasValidVM())
             VMManager::ReloadGameSettingsLayer();
-    }, /*block=*/true);
+    });
 }
 
 // What the game database sets for [serial], one line per setting a per-game key can claim:

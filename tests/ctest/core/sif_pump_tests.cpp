@@ -57,6 +57,9 @@
 #include "R3000A.h"
 #include "R5900.h"
 #include "Sif.h"
+#include "SifRestartTestSupport.h"
+#include "IopThread/IopThreadVm.h"
+#include "ps2/HwInternal.h"
 
 #include <gtest/gtest.h>
 
@@ -1229,6 +1232,152 @@ TEST_F(SifPumpIdle, APumpAfterTheTransferFinishedChangesNothingTheMachineCanSee)
 			}
 		}
 	}
+}
+
+// The BIOS stops a running SIF channel (CHCR = 0) and starts it again. With the IOP on its own thread, the IOP is run up to
+// the EE's cycle before the EE's pump of the restart, and if it re-arms its DMA on the way, its pump runs first. These make
+// the calls in that order: the EE's start, the stop through the register write, the restart (STR set, the end flag cleared
+// as dmaSIFn does), the IOP's re-arm, and last the EE's own pump. The restart must be served once, and only by what the EE
+// started.
+TEST_F(SifPumpIdle, AStoppedSif1ChainThatIsStartedAgainIsSentOnceAndNoTagAfterItsEndIsRead)
+{
+	using namespace sif1restart;
+	ResetMachine(Script{});
+	BuildPacketA();
+	sif1ch.chcr.set(0x184);
+	dmaSIF1();
+	ASSERT_GT(sif1ch.qwc, 0u) << "the IOP is not armed, so the first pump stops part way through packet A";
+
+	hwWrite32<0x0c>(D6_CHCR, 0);
+	ASSERT_FALSE(sif1ch.chcr.STR);
+
+	FixUpAndQueuePacketB();
+	sif1ch.chcr.set(0x184);
+	sif1.ee.end = false;
+	psxDma10(hw_dma10.madr, hw_dma10.bcr, hw_dma10.chcr);
+	SIF1DmaFromEe();
+
+	ExpectBothPacketsAndNothingElse();
+}
+
+// The same order on SIF0. The EE side is stopped while it waits for its next tag. After the restart the IOP sends two
+// packets; the first ends the EE's chain, so the second must stay in the FIFO for the next start.
+TEST_F(SifPumpIdle, AStoppedSif0ChannelThatIsStartedAgainTakesNoPacketAfterTheEndOfItsChain)
+{
+	constexpr u32 kTags = 0x1000, kData = 0x20000, kEeDst = 0x100000;
+	ResetMachine(Script{});
+	u8* const iop = iopMem->Main;
+	// Three 8-word packets. The first ends the IOP's first chain and leaves the EE side waiting for a tag; the second ends
+	// the EE side; the third ends the IOP's second chain.
+	const u32 ee_id[3] = {TAG_CNT, TAG_END, TAG_END};
+	const u32 iop_end[3] = {0x40000000, 0, 0x40000000};
+	for (u32 p = 0; p < 3; p++)
+	{
+		Store32(iop, kTags + 16 * p + 0, (kData + 0x100 * p) | iop_end[p]);
+		Store32(iop, kTags + 16 * p + 4, 8);
+		Store32(iop, kTags + 16 * p + 8, 2 | (ee_id[p] << 28));
+		Store32(iop, kTags + 16 * p + 12, kEeDst + 0x100 * p);
+		for (u32 i = 0; i < 8; i++)
+			Store32(iop, kData + 0x100 * p + 4 * i, 0xD0000000 | (p << 8) | i);
+	}
+	hw_dma9.bcr = 0;
+	hw_dma9.chcr = 0x01000201;
+
+	sif0ch.chcr.set(0x184);
+	dmaSIF0();
+	hw_dma9.tadr = kTags;
+	psxDma9(hw_dma9.madr, hw_dma9.bcr, hw_dma9.chcr);
+	ASSERT_EQ(0xD0000007u, Load<u32>(eeMem->Main, kEeDst + 28)) << "the first packet arrived";
+	ASSERT_TRUE(sif0.ee.busy) << "the EE side waits for its next tag";
+
+	hwWrite32<0x0c>(D5_CHCR, 0);
+	ASSERT_FALSE(sif0ch.chcr.STR);
+
+	sif0ch.chcr.set(0x184);
+	sif0.ee.end = false;
+	hw_dma9.tadr = kTags + 16;
+	psxDma9(hw_dma9.madr, hw_dma9.bcr, hw_dma9.chcr);
+	SIF0DmaFromEe();
+
+	EXPECT_EQ(0xD0000107u, Load<u32>(eeMem->Main, kEeDst + 0x100 + 28)) << "the second packet arrived";
+	EXPECT_EQ(0u, Load<u32>(eeMem->Main, kEeDst + 0x200)) << "the third packet was taken by a channel its chain had ended";
+	EXPECT_EQ(12, sif0.fifo.size) << "the third packet's tag and words wait in the FIFO";
+	EXPECT_FALSE(sif0.ee.busy);
+	EXPECT_NE(0u, cpuRegs.interrupt & (1u << DMAC_SIF0)) << "the EE's completion is scheduled";
+}
+
+// The IOP thread's lag rules watch the SIF RPC packets that pass through these pumps for calls to the memory card server
+// (IopThread::McServerCallInProgress). These run the packets through the real pumps.
+namespace
+{
+	constexpr u32 kMcServerData = 0x50000; // IOP address of the server's data, whose first word is the server's id
+	constexpr u32 kSif1Payload = 0x100020; // BuildSif1: the first packet's payload in EE RAM, after the chain tag and the IOP tag
+	constexpr u32 kSif1IopDst = 0x30000; // BuildSif1: where it lands in IOP RAM
+	constexpr u32 kSif0Payload = 0x20000; // BuildSif0: the first packet's payload in IOP RAM
+	constexpr u32 kSif0EeDst = 0x100000; // BuildSif0: where it lands in EE RAM
+	constexpr u32 kMcClient = 0x0047a900;
+
+	// The EE sends an RPC call to the memory card server over SIF1, as the game's library does (a 64-byte packet).
+	void SendMcCall(u32 rmode, u32 pkt_addr)
+	{
+		const Script s = Make(Chan::Sif1, Start::EeFirst, {16}, Term::Both, "_mccall");
+		ResetMachine(s);
+		Rng rng(s.name);
+		const Built b = BuildSif1(s, rng);
+		const u32 call[16] = {0x40, 0x0008f000, 0x8000000A, 0, 1, pkt_addr, 7, kMcClient, 5, 0x400, 0x00480000, 0x400, rmode, kMcServerData, 0, 0};
+		for (u32 i = 0; i < 16; i++)
+			Store32(eeMem->Main, kSif1Payload + 4 * i, call[i]);
+		Store32(iopMem->Main, kMcServerData, 0x80000400);
+		for (const Call c : b.calls)
+			DoCall(s, c);
+		ASSERT_EQ(0x8000000Au, Load<u32>(iopMem->Main, kSif1IopDst + 8)) << "the call did not reach IOP RAM";
+	}
+
+	// The IOP sends 12 words over SIF0 to kSif0EeDst: `packet`, or whatever the script puts there.
+	void SendFromIop(const u32* packet)
+	{
+		const Script s = Make(Chan::Sif0, Start::IopFirst, {12}, Term::Both, "_mcend");
+		ResetMachine(s);
+		Rng rng(s.name);
+		const Built b = BuildSif0(s, rng);
+		if (packet)
+		{
+			for (u32 i = 0; i < 12; i++)
+				Store32(iopMem->Main, kSif0Payload + 4 * i, packet[i]);
+		}
+		for (const Call c : b.calls)
+			DoCall(s, c);
+	}
+} // namespace
+
+TEST_F(SifPumpIdle, AMemoryCardServerCallIsInProgressFromItsSif1PacketToItsSif0End)
+{
+	IopThread::ResyncClocks();
+	SendMcCall(1, 0x00470000);
+	EXPECT_TRUE(IopThread::McServerCallInProgress(1000));
+	// The server's RPC end packet for the client.
+	const u32 end[12] = {0x30, 0x00470000, 0x80000008, 0, 1, 0x00470000, 7, kMcClient, 0x8000000A, kMcServerData, 0x00480000, 0};
+	SendFromIop(end);
+	EXPECT_FALSE(IopThread::McServerCallInProgress(1000));
+}
+
+// A call made without the no-wait mode gets no RPC end packet: the IOP writes the end straight into the EE's copy of the call packet.
+TEST_F(SifPumpIdle, ACallWithNoEndPacketEndsWhenTheIopWritesItsPacketBack)
+{
+	IopThread::ResyncClocks();
+	SendMcCall(0, kSif0EeDst);
+	EXPECT_TRUE(IopThread::McServerCallInProgress(1000));
+	SendFromIop(nullptr);
+	EXPECT_FALSE(IopThread::McServerCallInProgress(1000));
+}
+
+TEST_F(SifPumpIdle, AStateLoadOrResetForgetsTheMemoryCardCallsInProgress)
+{
+	IopThread::ResyncClocks();
+	SendMcCall(1, 0x00470000);
+	EXPECT_TRUE(IopThread::McServerCallInProgress(1000));
+	IopThread::ResyncClocks(); // what a savestate load and a VM reset call
+	EXPECT_FALSE(IopThread::McServerCallInProgress(1000));
 }
 
 INSTANTIATE_TEST_SUITE_P(Scripts, SifPump, ::testing::ValuesIn(AllScripts()),

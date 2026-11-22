@@ -6,7 +6,9 @@
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSDirtyRect.h"
+#include "GS/Renderers/Common/GSTargetSizePolicy.h"
 #include "GS/Renderers/HW/GSAlphaKnownBits.h"
+#include "GS/Renderers/HW/GSAlphaKnownRects.h"
 
 #include <array>
 #include <deque>
@@ -378,6 +380,11 @@ public:
 		/// byte-identity-tested against the dump corpus and is not re-litigated here.
 		bool m_alpha_known_via_union = false;
 
+		/// Alpha bits known inside rectangles of the texture, where a gapless write established
+		/// them without covering m_valid. Read by the exact FBMSK-drop rule only when m_alpha_known
+		/// does not answer. See GSAlphaKnownRects.h.
+		GSAlphaKnownRects::Set m_alpha_rects;
+
 		// Valid alpha means "we have rendered to the alpha channel of this target".
 		// A false value means that the alpha in local memory is still valid/up-to-date.
 		bool m_valid_alpha_low = false;
@@ -430,6 +437,21 @@ public:
 		/// Devbuild tripwire for m_alpha_known drifting away from m_alpha_min/max. Cheap, and a
 		/// no-op outside devbuilds.
 		void AssertAlphaKnownAgreesWithRange(const char* site) const;
+
+		/// Replaces what is known about the target's alpha: the whole-target pair becomes `k` and
+		/// every rectangle is forgotten. For anything that writes the texture other than a draw.
+		void ResetAlphaKnown(GSAlphaKnownBits::Known k)
+		{
+			m_alpha_known = k;
+			m_alpha_known_via_union = false;
+			m_alpha_rects.Clear();
+		}
+
+		/// What m_alpha_rects describe: this texture allocation under this base, width and format.
+		GSAlphaKnownRects::Key AlphaRectsKey() const
+		{
+			return {m_texture ? m_texture->GetLease() : 0, m_TEX0.U32[0] & 0x3ffffffu};
+		}
 
 		void Update(bool cannot_scale = false);
 
@@ -858,6 +880,13 @@ public:
 	/// texture whose native size is `native`, since that is a span starting at 0.
 	static int ScaleNativeToDevice(int native, float scale);
 
+	/// A target's unscaled size rounded up so that its device size is exactly scale times it
+	/// (GSTargetSizePolicy.h). Unchanged at 1x and above.
+	static GSVector2i AlignTargetSize(const GSVector2i& size, float scale)
+	{
+		return GSVector2i(GSAlignTargetSize(size.x, scale), GSAlignTargetSize(size.y, scale));
+	}
+
 	/// The device length of the native span [start, start + length): the difference of its two
 	/// edges' device positions. Not ScaleNativeToDevice(length), which is the length of a span
 	/// starting at native 0; at a fractional scale the two differ by up to a device pixel.
@@ -963,6 +992,9 @@ public:
 	/// Drops every queued asynchronous download (mode change, target flush, reset).
 	void DiscardPendingDownloads();
 	void RemoveAll(bool sources, bool targets, bool hash_cache);
+	/// Drops what RemoveAll() keeps from the device: the held words, unwritten, and the shared readback
+	/// buffers. For a device that is about to be destroyed.
+	void ReleaseKeptDeviceObjects();
 
 	/// Says the renderer has just been reset: the targets are gone and local memory may have been
 	/// replaced under them (savestate or GS-dump load), so until a display finds a target to
