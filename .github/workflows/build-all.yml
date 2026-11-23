@@ -137,7 +137,8 @@ jobs:
         run: rustup target add aarch64-linux-android
 
       - name: Build release APK
-        run: ./gradlew :app:assembleRelease --stacktrace
+        run: ./gradlew :app:assembleGithubRelease --stacktrace
+        
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
