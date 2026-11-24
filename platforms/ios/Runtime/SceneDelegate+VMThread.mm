@@ -31,6 +31,7 @@
 
 #include "IconsFontAwesome.h"
 #include "IOSRuntime.h"
+#import "ARMSX2BridgeKeys.h"
 #import "SceneDelegateInternal.h"
 
 // JIT keepalive: every 12 seconds while the VM is idle, DarwinMisc::ValidateJITAlive()
@@ -67,7 +68,7 @@ static void ARMSX2ResolveIdleVMPrewarm()
 
     dispatch_async(dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter]
-            postNotificationName:@"ARMSX2iOSIdleVMPrewarmResolved" object:nil];
+            postNotificationName:ARMSX2iOSIdleVMPrewarmResolved object:nil];
     });
 }
 
@@ -297,7 +298,7 @@ static void ARMSX2StartJITKeepalive()
                         "JIT memory setup took too long. This is a known issue with the Universal TXM "
                         "protocol on iOS 26. Try Settings → Emulator → JIT Script → Legacy, or relaunch "
                         "via StikDebug.");
-                    [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSReturnToMenu" object:nil];
+                    [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2iOSReturnToMenu object:nil];
                 });
                 ARMSX2ResolveIdleVMPrewarm();
                 std::lock_guard<std::mutex> lk(s_vmMutex);
@@ -380,8 +381,6 @@ static void ARMSX2StartJITKeepalive()
                 std::string isoDir = EmuFolders::DataRoot + "/iso";
                 std::string defaultISO = "";
                 std::string isoFilename = Host::GetBaseStringSettingValue("GameISO", "BootISO", defaultISO.c_str());
-                Host::SetBaseStringSettingValue("GameISO", "BootISO", isoFilename.c_str());
-                Host::CommitBaseSettingChanges();
                 std::string isoPath = (!isoFilename.empty() && isoFilename.front() == '/') ? isoFilename : (isoDir + "/" + isoFilename);
                 // Fallback: check Documents/ root if not found in iso/.
                 if (!isoFilename.empty() && isoFilename.front() != '/' && !FileSystem::FileExists(isoPath.c_str())) {
@@ -457,7 +456,7 @@ static void ARMSX2StartJITKeepalive()
                 Host::ReportErrorAsync("BIOS Error", "Validation failed.");
                 s_vmThreadActive.store(false);
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSVMDidShutdown" object:nil];
+                    [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2iOSVMDidShutdown object:nil];
                 });
                 continue; // back to wait loop
             }
@@ -469,8 +468,8 @@ static void ARMSX2StartJITKeepalive()
                 ARMSX2RepairIOSARM64JITSettings(s_settings_interface, "pre-vm-initialize");
                 ARMSX2MigrateJITScriptProtocolForIOS(s_settings_interface, "pre-vm-initialize");
                 ARMSX2IOSSanitizeFolderSettings(s_settings_interface, EmuFolders::DataRoot, "pre-vm-initialize");
+                VMManager::Internal::LoadStartupSettings();
             }
-            VMManager::Internal::LoadStartupSettings();
             ARMSX2ApplyIOSOsdPresetFromConfig("pre-vm-initialize");
             EmuConfig.Speedhacks.vuThread =
                 Host::GetBaseBoolSettingValue("EmuCore/Speedhacks", "vuThread", EmuConfig.Speedhacks.vuThread);
@@ -561,7 +560,7 @@ static void ARMSX2StartJITKeepalive()
             s_requestVMStop.store(false);
             Console.WriteLn("[VM] VM Thread: shutdown complete, posting notification");
             dispatch_async(dispatch_get_main_queue(), ^{
-                [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSVMDidShutdown" object:nil];
+                [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2iOSVMDidShutdown object:nil];
             });
         } // end while(true) boot loop
     });

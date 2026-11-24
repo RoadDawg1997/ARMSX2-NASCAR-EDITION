@@ -104,10 +104,21 @@ void cpuReset()
 	CBreakPoints::ClearSkipFirst();
 }
 
+// Taking an exception costs an SCPH-30001 9 cycles more than the table charges
+// for the instructions it runs: a BREAK into a five-instruction handler that
+// returns with ERET takes 33 cycles, against 24 for the BREAK, the kernel's
+// ten-instruction common vector and the handler. Both engines take every
+// exception here (SYSCALL, BREAK, traps, interrupts from the event test), so it
+// is charged here.
+static constexpr u32 kExceptionEntryCycles = 9;
+
 __ri void cpuException(u32 code, u32 bd)
 {
 	bool errLevel2, checkStatus;
 	u32 offset = 0;
+
+	// The interpreter's path ends here; the handler starts a new one.
+	intIssuePathBreak();
 
     cpuRegs.branch = 0;		// Tells the interpreter that an exception occurred during a branch.
 	cpuRegs.CP0.n.Cause = code & 0xffff;
@@ -173,6 +184,8 @@ __ri void cpuException(u32 code, u32 bd)
 		cpuRegs.pc = 0x80000000 + offset;
 	else
 		cpuRegs.pc = 0xBFC00200 + offset;
+
+	cpuRegs.cycle += kExceptionEntryCycles;
 
 	cpuUpdateOperationMode();
 }

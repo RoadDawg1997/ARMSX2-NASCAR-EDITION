@@ -8,8 +8,8 @@ import UIKit
 
 struct NetworkSettingsView: View {
     @State private var settings = SettingsStore.shared
-    @State private var hosts: [DNSHost] = []
-    @State private var lastPersistedHosts: [DNSHost] = []
+    @State private var hosts: [DEV9Host] = []
+    @State private var lastPersistedHosts: [DEV9Host] = []
     @State private var networkAdapters: [String] = []
     @State private var hasLoadedHosts = false
     @State private var hostSaveTask: Task<Void, Never>?
@@ -96,15 +96,15 @@ struct NetworkSettingsView: View {
             }
 
             Section(settings.localized("Internal DNS")) {
-                ForEach($hosts) { $host in
+                ForEach(hosts) { host in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            TextField(settings.localized("Hostname"), text: $host.url)
+                            TextField(settings.localized("Hostname"), text: hostBinding(host).url)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
-                            Toggle("", isOn: $host.enabled).labelsHidden()
+                            Toggle("", isOn: hostBinding(host).enabled).labelsHidden()
                         }
-                        TextField("0.0.0.0", text: $host.address)
+                        TextField("0.0.0.0", text: hostBinding(host).address)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.numbersAndPunctuation)
@@ -115,7 +115,7 @@ struct NetworkSettingsView: View {
                 .onDelete { hosts.remove(atOffsets: $0) }
 
                 Button {
-                    hosts.append(DNSHost(url: "", desc: "", address: "0.0.0.0", enabled: true))
+                    hosts.append(DEV9Host(url: "", desc: "", address: "0.0.0.0", enabled: true))
                 } label: {
                     Label(settings.localized("Add Host"), systemImage: "plus")
                 }
@@ -188,22 +188,20 @@ struct NetworkSettingsView: View {
             .disabled(mode.wrappedValue != "Manual")
     }
 
+    private func hostBinding(_ host: DEV9Host) -> Binding<DEV9Host> {
+        Binding(
+            get: { hosts.first { $0.id == host.id } ?? host },
+            set: { newValue in
+                if let index = hosts.firstIndex(where: { $0.id == host.id }) {
+                    hosts[index] = newValue
+                }
+            }
+        )
+    }
+
     private func loadHosts() {
-        let count = Int(ARMSX2Bridge.getINIInt("DEV9/Eth/Hosts", key: "Count", defaultValue: 0))
-        var loaded: [DNSHost] = []
-        var i = 0
-        while i < count {
-            let sec = "DEV9/Eth/Hosts/Host\(i)"
-            loaded.append(DNSHost(
-                url: ARMSX2Bridge.getINIString(sec, key: "Url", defaultValue: ""),
-                desc: ARMSX2Bridge.getINIString(sec, key: "Desc", defaultValue: ""),
-                address: ARMSX2Bridge.getINIString(sec, key: "Address", defaultValue: "0.0.0.0"),
-                enabled: ARMSX2Bridge.getINIBool(sec, key: "Enabled", defaultValue: true)
-            ))
-            i += 1
-        }
-        hosts = loaded
-        lastPersistedHosts = loaded
+        hosts = settings.network.dev9Hosts
+        lastPersistedHosts = settings.network.dev9Hosts
         hasLoadedHosts = true
     }
 
@@ -237,28 +235,7 @@ struct NetworkSettingsView: View {
     }
 
     private func saveHosts() {
-        let oldCount = Int(ARMSX2Bridge.getINIInt("DEV9/Eth/Hosts", key: "Count", defaultValue: 0))
-        var i = 0
-        while i < max(oldCount, hosts.count) {
-            ARMSX2Bridge.clearINISection("DEV9/Eth/Hosts/Host\(i)")
-            i += 1
-        }
-        ARMSX2Bridge.setINIInt("DEV9/Eth/Hosts", key: "Count", value: Int32(hosts.count))
-        for (idx, host) in hosts.enumerated() {
-            let sec = "DEV9/Eth/Hosts/Host\(idx)"
-            ARMSX2Bridge.setINIString(sec, key: "Url", value: host.url)
-            ARMSX2Bridge.setINIString(sec, key: "Desc", value: host.desc.isEmpty ? host.url : host.desc)
-            ARMSX2Bridge.setINIString(sec, key: "Address", value: host.address)
-            ARMSX2Bridge.setINIBool(sec, key: "Enabled", value: host.enabled)
-        }
+        settings.network.saveDEV9Hosts(hosts)
         lastPersistedHosts = hosts
     }
-}
-
-private struct DNSHost: Identifiable, Equatable {
-    let id = UUID()
-    var url: String
-    var desc: String
-    var address: String
-    var enabled: Bool
 }

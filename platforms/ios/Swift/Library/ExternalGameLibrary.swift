@@ -10,12 +10,11 @@ struct ExternalGameDirectory: Identifiable, Hashable {
     let isDirectory: Bool
 }
 
+@MainActor
 @Observable
-final class ExternalGameLibrary: @unchecked Sendable {
+final class ExternalGameLibrary {
     static let shared = ExternalGameLibrary()
     static let didChangeNotification = Notification.Name("ARMSX2iOSExternalGameLibraryDidChange")
-
-    static let defaultsKey = "ARMSX2iOSExternalGameDirectories"
 
     private(set) var directories: [ExternalGameDirectory] = []
     private static let gameExtensions = Set(["iso", "chd", "img", "bin", "cue", "mdf", "cso", "zso", "gz", "elf"])
@@ -25,41 +24,41 @@ final class ExternalGameLibrary: @unchecked Sendable {
     }
 
     func reload() {
-        let records = UserDefaults.standard.array(forKey: Self.defaultsKey) as? [[String: Any]] ?? []
+        let records = UserDefaults.standard.array(forKey: ARMSX2iOSExternalGameDirectories) as? [[String: Any]] ?? []
         directories = records.compactMap { record in
-            guard let id = record["id"] as? String,
-                  let displayName = record["displayName"] as? String,
-                  let path = record["path"] as? String else {
+            guard let id = record[ARMSX2GameLibraryKey.id.rawValue] as? String,
+                  let displayName = record[ARMSX2GameLibraryKey.displayName.rawValue] as? String,
+                  let path = record[ARMSX2GameLibraryKey.path.rawValue] as? String else {
                 return nil
             }
-            let isDirectory = (record["isDirectory"] as? Bool) ?? ((record["kind"] as? String) != "file")
+            let isDirectory = (record[ARMSX2GameLibraryKey.isDirectory.rawValue] as? Bool) ?? ((record[ARMSX2GameLibraryKey.kind.rawValue] as? String) != "file")
             return ExternalGameDirectory(id: id, displayName: displayName, path: path, isDirectory: isDirectory)
         }
     }
 
     @discardableResult
-	    func addLocation(_ url: URL) -> String {
-	        let accessing = url.startAccessingSecurityScopedResource()
-	        defer {
-	            if accessing {
-	                url.stopAccessingSecurityScopedResource()
-	            }
-	        }
+        func addLocation(_ url: URL) -> String {
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessing {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
 
-	        let standardizedURL = url.standardizedFileURL
-	        let resourceValues = try? standardizedURL.resourceValues(forKeys: [.isDirectoryKey])
-	        let isGameFile = Self.isSupportedGameFileURL(standardizedURL)
-	        let isDirectory = resourceValues?.isDirectory ?? !isGameFile
-	        let cloudProvider = Self.isLikelyCloudProvider(standardizedURL)
-	        let scanDisabled = isDirectory && cloudProvider
-	        guard isDirectory || isGameFile else {
-	            NSLog("[ARMSX2 iOS External Games] rejected unsupported location path=%@", standardizedURL.path)
-	            return "External location could not be added. Select a folder or a supported PS2 image."
-	        }
-	        if cloudProvider {
-	            NSLog("[ARMSX2 iOS External Games] rejected cloud provider direct access path=%@", standardizedURL.path)
-	            return "Google Drive cannot be used as direct external storage.\n\nCloud files are not guaranteed to be downloaded as stable, seekable files. Use Import Games to copy the ISO into ARMSX2 first."
-	        }
+            let standardizedURL = url.standardizedFileURL
+            let resourceValues = try? standardizedURL.resourceValues(forKeys: [.isDirectoryKey])
+            let isGameFile = Self.isSupportedGameFileURL(standardizedURL)
+            let isDirectory = resourceValues?.isDirectory ?? !isGameFile
+            let cloudProvider = Self.isLikelyCloudProvider(standardizedURL)
+            let scanDisabled = isDirectory && cloudProvider
+            guard isDirectory || isGameFile else {
+                NSLog("[ARMSX2 iOS External Games] rejected unsupported location path=%@", standardizedURL.path)
+                return "External location could not be added. Select a folder or a supported PS2 image."
+            }
+            if cloudProvider {
+                NSLog("[ARMSX2 iOS External Games] rejected cloud provider direct access path=%@", standardizedURL.path)
+                return "Google Drive cannot be used as direct external storage.\n\nCloud files are not guaranteed to be downloaded as stable, seekable files. Use Import Games to copy the ISO into ARMSX2 first."
+            }
 
         do {
             let bookmarkData = try standardizedURL.bookmarkData(
@@ -67,25 +66,25 @@ final class ExternalGameLibrary: @unchecked Sendable {
                 includingResourceValuesForKeys: nil,
                 relativeTo: nil
             )
-            var records = UserDefaults.standard.array(forKey: Self.defaultsKey) as? [[String: Any]] ?? []
+            var records = UserDefaults.standard.array(forKey: ARMSX2iOSExternalGameDirectories) as? [[String: Any]] ?? []
             let path = standardizedURL.path
             let displayName = standardizedURL.lastPathComponent.isEmpty ? path : standardizedURL.lastPathComponent
             let record: [String: Any] = [
-                "id": UUID().uuidString,
-                "displayName": displayName,
-                "path": path,
-                "bookmarkData": bookmarkData,
-                "isDirectory": isDirectory,
-                "kind": isDirectory ? "folder" : "file",
-                "scanDisabled": scanDisabled,
+                ARMSX2GameLibraryKey.id.rawValue: UUID().uuidString,
+                ARMSX2GameLibraryKey.displayName.rawValue: displayName,
+                ARMSX2GameLibraryKey.path.rawValue: path,
+                ARMSX2GameLibraryKey.bookmarkData.rawValue: bookmarkData,
+                ARMSX2GameLibraryKey.isDirectory.rawValue: isDirectory,
+                ARMSX2GameLibraryKey.kind.rawValue: isDirectory ? "folder" : "file",
+                ARMSX2GameLibraryKey.scanDisabled.rawValue: scanDisabled,
             ]
 
             records.removeAll { existing in
-                guard let existingPath = existing["path"] as? String else { return false }
+                guard let existingPath = existing[ARMSX2GameLibraryKey.path.rawValue] as? String else { return false }
                 return URL(fileURLWithPath: existingPath).standardizedFileURL.path == path
             }
             records.append(record)
-            UserDefaults.standard.set(records, forKey: Self.defaultsKey)
+            UserDefaults.standard.set(records, forKey: ARMSX2iOSExternalGameDirectories)
             reload()
             NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
 
@@ -102,37 +101,37 @@ final class ExternalGameLibrary: @unchecked Sendable {
     }
 
     func removeDirectory(id: String) {
-        var records = UserDefaults.standard.array(forKey: Self.defaultsKey) as? [[String: Any]] ?? []
-        records.removeAll { ($0["id"] as? String) == id }
-        UserDefaults.standard.set(records, forKey: Self.defaultsKey)
+        var records = UserDefaults.standard.array(forKey: ARMSX2iOSExternalGameDirectories) as? [[String: Any]] ?? []
+        records.removeAll { ($0[ARMSX2GameLibraryKey.id.rawValue] as? String) == id }
+        UserDefaults.standard.set(records, forKey: ARMSX2iOSExternalGameDirectories)
         reload()
         NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
     }
 
-	    static func isSupportedGameFileURL(_ url: URL) -> Bool {
-	        if hasSupportedGameExtension(url.path) || hasSupportedGameExtension(url.lastPathComponent) {
-	            return true
-	        }
+        static func isSupportedGameFileURL(_ url: URL) -> Bool {
+            if hasSupportedGameExtension(url.path) || hasSupportedGameExtension(url.lastPathComponent) {
+                return true
+            }
 
-	        let values = try? url.resourceValues(forKeys: [.nameKey, .localizedNameKey])
-	        if let name = values?.name, hasSupportedGameExtension(name) {
-	            return true
-	        }
-	        if let localizedName = values?.localizedName, hasSupportedGameExtension(localizedName) {
-	            return true
-	        }
+            let values = try? url.resourceValues(forKeys: [.nameKey, .localizedNameKey])
+            if let name = values?.name, hasSupportedGameExtension(name) {
+                return true
+            }
+            if let localizedName = values?.localizedName, hasSupportedGameExtension(localizedName) {
+                return true
+            }
 
-	        return false
-	    }
+            return false
+        }
 
-	    private static func hasSupportedGameExtension(_ name: String) -> Bool {
-	        let ext = (name as NSString).pathExtension.lowercased()
-	        return gameExtensions.contains(ext)
-	    }
+        private static func hasSupportedGameExtension(_ name: String) -> Bool {
+            let ext = (name as NSString).pathExtension.lowercased()
+            return gameExtensions.contains(ext)
+        }
 
-	    private static func isLikelyCloudProvider(_ url: URL) -> Bool {
-	        let path = url.path.lowercased()
-	        let name = url.lastPathComponent.lowercased()
-	        return path.contains("google") || name.contains("google")
-	    }
+        private static func isLikelyCloudProvider(_ url: URL) -> Bool {
+            let path = url.path.lowercased()
+            let name = url.lastPathComponent.lowercased()
+            return path.contains("google") || name.contains("google")
+        }
 }

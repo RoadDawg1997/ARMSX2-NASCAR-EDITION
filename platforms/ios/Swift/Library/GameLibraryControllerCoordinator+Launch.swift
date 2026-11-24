@@ -6,37 +6,37 @@ import PhotosUI
 import UIKit
 
 extension GameLibraryControllerCoordinator {
-	func presentMenuPanel(_ action: @escaping () -> Void) {
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-			action()
-		}
-	}
+    func presentMenuPanel(_ action: @escaping () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            action()
+        }
+    }
 
-	func open(
+    func open(
         _ game: ISOEntry,
         allowsAutomaticSkinPrompt: Bool = true
     ) {
-		// A touch long-press shares the card's gesture arena. Once the unified
-		// context surface owns this game, ignore the Button release from that same
-		// press instead of launching underneath the menu.
-		guard controllerContextMenuState.gameID != game.id else { return }
-		MenuAudioPackManager.shared.suppressPendingGenericActivation()
-		if library.isRunning(game) {
-			session.returnToGame()
-			return
-		}
+        // A touch long-press shares the card's gesture arena. Once the unified
+        // context surface owns this game, ignore the Button release from that same
+        // press instead of launching underneath the menu.
+        guard controllerContextMenuState.gameID != game.id else { return }
+        MenuAudioPackManager.shared.suppressPendingGenericActivation()
+        if library.isRunning(game) {
+            session.returnToGame()
+            return
+        }
 
-		guard ARMSX2Bridge.canResolveISO(game.bootName) else {
-			gameActionTitle = settings.localized("Game Not Found")
-			gameActionMessage = settings.localized("This game file is no longer available. Refresh the library or import it again.")
-			library.loadGames()
-			return
-		}
+        guard ARMSX2Bridge.canResolveISO(game.bootName) else {
+            gameActionTitle = settings.localized("Game Not Found")
+            gameActionMessage = settings.localized("This game file is no longer available. Refresh the library or import it again.")
+            library.loadGames()
+            return
+        }
 
         let transition = makeGameplayLaunchTransition(for: game)
         let automaticSkinOptions = allowsAutomaticSkinPrompt
             ? AutomaticCustomSkinManager.shared.availableProposals(
-                forSerial: game.metadata["serial"]
+                forSerial: game.metadata[.serial]
             )
             : []
         if !automaticSkinOptions.isEmpty {
@@ -51,15 +51,15 @@ extension GameLibraryControllerCoordinator {
         }
 
         continueGameLaunch(game, transition: transition)
-	}
+    }
 
     private func continueGameLaunch(
         _ game: ISOEntry,
         transition: GameplayLaunchTransition?,
         preferredPadSerial: String? = nil
     ) {
-        let padSerial = preferredPadSerial ?? game.metadata["serial"]
-        let padCRC = game.metadata["crc"]
+        let padSerial = preferredPadSerial ?? game.metadata[.serial]
+        let padCRC = game.metadata[.crc]
         if session.runningGameName != nil {
             pendingGameName = game.bootName
             pendingGameplayLaunchTransition = transition
@@ -89,8 +89,8 @@ extension GameLibraryControllerCoordinator {
         if apply, pending.proposal.isCatalogListing {
             // Only the library picker lists skins that are not installed yet.
             let identity = PadLayoutGameIdentity(
-                serial: pending.game.metadata["serial"],
-                crc: pending.game.metadata["crc"]
+                serial: pending.game.metadata[.serial],
+                crc: pending.game.metadata[.crc]
             )
             let skinAtPick = identity.flatMap { PadLayoutPresetStore.shared.skinID(for: $0) }
             catalogSkinInstallTask = Task { @MainActor in
@@ -157,7 +157,7 @@ extension GameLibraryControllerCoordinator {
     }
 
     func presentPerGameCustomSkin(for game: ISOEntry) {
-        let serial = game.metadata["serial"]
+        let serial = game.metadata[.serial]
         let proposals = AutomaticCustomSkinManager.shared
             .installedProposals(forSerial: serial)
         guard !proposals.isEmpty else {
@@ -430,8 +430,8 @@ extension GameLibraryControllerCoordinator {
         }
     }
 
-	func releaseLibraryResourcesForGameplay() {
-		coverFlowPreheater.cancel()
+    func releaseLibraryResourcesForGameplay() {
+        coverFlowPreheater.cancel()
         nowRunningRemovalResetTask?.cancel()
         nowRunningRemovalResetTask = nil
         favoriteAnimationValues.removeAll(keepingCapacity: false)
@@ -442,7 +442,7 @@ extension GameLibraryControllerCoordinator {
         nowRunningStatusOpacity = 1
         gameplayLaunchCardRegistry.removeAll()
         library.releaseLibraryResourcesForGameplay()
-		}
+        }
 
     func scheduleStopRunningGame() {
         showStopAlert = false
@@ -517,8 +517,8 @@ extension GameLibraryControllerCoordinator {
         }
     }
 
-	@discardableResult
-	func toggleFavorite(
+    @discardableResult
+    func toggleFavorite(
         _ game: ISOEntry,
         playsSelectionFeedback: Bool = true
     ) -> Bool {
@@ -542,30 +542,30 @@ extension GameLibraryControllerCoordinator {
             )
         }
 
-		if playsSelectionFeedback {
-			UISelectionFeedbackGenerator().selectionChanged()
-		}
-		return updatedValue
-	}
+        if playsSelectionFeedback {
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
+        return updatedValue
+    }
 
-	func copyLaunchLink(_ game: ISOEntry) {
-		let link = ARMSX2DeepLinkHandler.launchURL(forISO: game.name)
-		UIPasteboard.general.string = link
-		presentMenuPanel { [self] in
-			gameActionTitle = "Launch Link Copied"
-			gameActionMessage = link
-		}
-	}
+    func copyLaunchLink(_ game: ISOEntry) {
+        let link = ARMSX2DeepLinkHandler.launchURL(forISO: game.name)
+        UIPasteboard.general.string = link
+        presentMenuPanel { [self] in
+            gameActionTitle = "Launch Link Copied"
+            gameActionMessage = link
+        }
+    }
 
-	func clearGameCache(_ game: ISOEntry) {
-		(gameActionTitle, gameActionMessage) = library.clearGameCache(game)
-	}
+    func clearGameCache(_ game: ISOEntry) {
+        (gameActionTitle, gameActionMessage) = library.clearGameCache(game)
+    }
 
-	func deleteGameData(_ game: ISOEntry) {
-		(gameActionTitle, gameActionMessage) = library.deleteGameData(game)
-	}
+    func deleteGameData(_ game: ISOEntry) {
+        (gameActionTitle, gameActionMessage) = library.deleteGameData(game)
+    }
 
-	func deleteGame(_ game: ISOEntry, deleteData: Bool) {
-		(gameActionTitle, gameActionMessage) = library.deleteGame(game, deleteData: deleteData)
-	}
+    func deleteGame(_ game: ISOEntry, deleteData: Bool) {
+        (gameActionTitle, gameActionMessage) = library.deleteGame(game, deleteData: deleteData)
+    }
 }

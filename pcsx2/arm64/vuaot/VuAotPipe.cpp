@@ -21,6 +21,9 @@ namespace vuaot
 		constexpr u32 kTbit = 1u << 27;
 		constexpr u32 kIbit = 1u << 31;
 		constexpr bool doConstProp = false;
+		// Region code is shared between copies of a routine at different addresses: a
+		// propagated constant would bake a link value and a JR target in.
+		static_assert(!doConstProp, "vu-aot regions take their micro-memory addresses from the placement's root");
 		constexpr bool doDBitHandling = false;
 		constexpr bool noFlagOpts = false;
 
@@ -693,14 +696,17 @@ namespace vuaot
 		}
 	}
 
-	// setBranchA (microVU_Lower-arm64.inl): runs in every pass.
+	// setBranchA (microVU_Lower-arm64.inl): runs in every pass. A block's first
+	// instruction takes the delay-slot answer from the entry state, as there.
 	void PipeAnalyzer::setBranchA(int pass, int x, int x_)
 	{
-		bool isBranchDelaySlot = false;
-		incPC(-2);
-		if (info().lOp.branch)
-			isBranchDelaySlot = true;
-		incPC(2);
+		bool isBranchDelaySlot = isEvilBlock();
+		if (iPC_ != startPC_)
+		{
+			incPC(-2);
+			isBranchDelaySlot = info().lOp.branch != 0;
+			incPC(2);
+		}
 
 		const bool optimized = (Imm11() == 1 && !x_ && !isBranchDelaySlot);
 		if (pass == 0)

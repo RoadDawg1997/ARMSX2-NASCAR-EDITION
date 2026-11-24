@@ -54,9 +54,7 @@ enum DynamicThumbstickMath {
         let safeDeadZone = min(max(deadZone, 0), 0.95)
         let cappedDistance = min(rawDistance, maximumRadius)
         let normalizedDistance = cappedDistance / maximumRadius
-        // Input saturation and deadzone progression can use different radii.
-        // This preserves the larger movement area while letting the left stick
-        // reach its configured deadzone at the visible Maximum Radius.
+        // The deadzone ramps over its own radius, so it is reached at the visible Maximum Radius.
         let progressRadius = max(deadZoneProgressRadius ?? maximumRadius, 1)
         let deadZoneProgress = min(rawDistance / progressRadius, 1)
         let progressRadiusScale = min(progressRadius / maximumRadius, 1)
@@ -582,7 +580,7 @@ final class SwipeCameraInputDriver: NSObject {
             return
         }
 
-        let settings = DynamicThumbstickSettings.shared
+        let settings = SettingsStore.shared.dynamicThumbsticks
         let sensitivity = settings.effectiveSwipeSensitivity(isAiming: isAiming)
         let degreesPerSecondX = Double(delta.width) * sensitivity.horizontal / deltaTime
         let degreesPerSecondY = Double(delta.height) * sensitivity.vertical / deltaTime
@@ -638,7 +636,7 @@ final class VirtualPadGyroscopeController {
 
     private func consume(x: Double, y: Double) {
         let raw = Self.screenRate(x: x, y: y, orientation: interfaceOrientation)
-        let settings = DynamicThumbstickSettings.shared
+        let settings = SettingsStore.shared.dynamicThumbsticks
         let retained = min(max(settings.gyroSmoothing, 0), 0.95)
         let blend = CGFloat(1 - retained)
         filteredRate = DynamicThumbstickVector(

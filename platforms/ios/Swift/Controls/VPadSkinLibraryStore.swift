@@ -34,8 +34,9 @@ private enum ManifestRead {
     }
 }
 
+@MainActor
 @Observable
-final class VPadSkinLibraryStore: @unchecked Sendable {
+final class VPadSkinLibraryStore {
     static let shared = VPadSkinLibraryStore()
     static let schemaVersion = 1
 
@@ -101,7 +102,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         }
     }
 
-    static var defaultDescriptor: VPadSkinDescriptor {
+    nonisolated static var defaultDescriptor: VPadSkinDescriptor {
         VPadSkinDescriptor(
             id: VirtualPadSkin.armsx2Refresh.descriptorID,
             displayName: VirtualPadSkin.armsx2Refresh.label,
@@ -187,8 +188,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         replacingSkinID: String? = nil,
         layoutPresets: PadLayoutPresetStore
     ) async throws -> VPadSkinImportResult {
-        // Import first, delete second. A failed download or a corrupt zip has to
-        // leave the skin the user already has alone.
+        // Import first, delete second: a failed download or corrupt zip keeps the current skin.
         let wasSelected = replacingSkinID != nil && selectedSkinID == replacingSkinID
         let result = try await performImport(
             from: sourceURL,
@@ -250,9 +250,8 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         replacingSkinID: String?,
         layoutPresets: PadLayoutPresetStore
     ) async throws -> VPadSkinImportResult {
-        // Additive v2 manifest detection. A package carrying a valid v2 manifest
-        // (info.json or a v2 manifest.json) is imported as an advanced manifest
-        // skin; everything else falls through to the legacy importer below.
+        // A valid v2 manifest (info.json or a v2 manifest.json) imports as an advanced
+        // skin; anything else falls through to the legacy importer below.
         switch importV2ManifestSkin(
             from: sourceURL,
             originalImportName: originalImportName,
@@ -696,7 +695,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
 
     /// Reads and re-encodes the skin's images. Deliberately touches nothing but
     /// the files it is handed so it is safe to run off the main thread.
-    private static func decodeSkinImages(
+    private nonisolated static func decodeSkinImages(
         from files: [URL],
         maxImageBytes: Int64,
         maxImportedImages: Int
@@ -741,14 +740,14 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         return (assets, warnings)
     }
 
-    private static func destinationSkinFileName(for url: URL) -> String? {
+    private nonisolated static func destinationSkinFileName(for url: URL) -> String? {
         if let canonical = canonicalSkinFileName(forImportPath: url.path) {
             return canonical
         }
         return fullSkinFileName(for: url)
     }
 
-    private static func fullSkinFileName(for url: URL) -> String? {
+    private nonisolated static func fullSkinFileName(for url: URL) -> String? {
         let stem = url.deletingPathExtension().lastPathComponent
             .lowercased()
             .replacingOccurrences(of: "[^a-z0-9]+", with: "_", options: .regularExpression)
@@ -767,7 +766,7 @@ final class VPadSkinLibraryStore: @unchecked Sendable {
         return nil
     }
 
-    private static func isSupportedImageFile(_ url: URL) -> Bool {
+    private nonisolated static func isSupportedImageFile(_ url: URL) -> Bool {
         switch url.pathExtension.lowercased() {
         case "png", "jpg", "jpeg", "webp":
             return true

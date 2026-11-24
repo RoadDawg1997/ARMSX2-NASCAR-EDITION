@@ -281,7 +281,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2GraphicsHackStateChanged" object:nil];
+        [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2GraphicsHackStateChanged object:nil];
     });
 }
 
@@ -354,7 +354,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
 
 + (void)clearINISection:(nonnull NSString *)section {
     if (!ARMSX2HasBaseSettings()) return;
-    ARMSX2EditBaseSettings([&](SettingsInterface& si) { si.ClearSection(section.UTF8String); });
+    ARMSX2EditBaseSettings([&](SettingsInterface& si) { si.RemoveSection(section.UTF8String); });
     ARMSX2ScheduleINISave();
 }
 

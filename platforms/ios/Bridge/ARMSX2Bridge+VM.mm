@@ -145,7 +145,7 @@
         VMManager::ReleaseNonEssentialRuntimeResources(static_cast<u32>(releaseFlags));
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter]
-                postNotificationName:@"ARMSX2iOSEmulationOnlyResourcesReleased"
+                postNotificationName:ARMSX2iOSEmulationOnlyResourcesReleased
                 object:nil];
         });
     }, false);
@@ -380,15 +380,15 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
 }
 
 + (void)requestVMBootLoadingLastSaveState:(BOOL)loadLastSaveState {
-	std::string bootISO;
-	if (ARMSX2HasBaseSettings())
-		bootISO = Host::GetBaseStringSettingValue("GameISO", "BootISO", "");
-	const std::string biosPath = Path::Combine(EmuFolders::Bios, EmuConfig.BaseFilenames.Bios);
-	std::fprintf(stderr, "@@BOOT_REQUEST@@ posted=1 has_bios=%d bios=\"%s\" boot_iso=\"%s\"\n",
-		(!EmuConfig.BaseFilenames.Bios.empty() && FileSystem::FileExists(biosPath.c_str())) ? 1 : 0,
-		EmuConfig.BaseFilenames.Bios.c_str(), bootISO.c_str());
-	std::fflush(stderr);
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSRequestVMBoot"
+    std::string bootISO;
+    if (ARMSX2HasBaseSettings())
+        bootISO = Host::GetBaseStringSettingValue("GameISO", "BootISO", "");
+    const std::string biosPath = Path::Combine(EmuFolders::Bios, EmuConfig.BaseFilenames.Bios);
+    std::fprintf(stderr, "@@BOOT_REQUEST@@ posted=1 has_bios=%d bios=\"%s\" boot_iso=\"%s\"\n",
+        (!EmuConfig.BaseFilenames.Bios.empty() && FileSystem::FileExists(biosPath.c_str())) ? 1 : 0,
+        EmuConfig.BaseFilenames.Bios.c_str(), bootISO.c_str());
+    std::fflush(stderr);
+    [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2iOSRequestVMBoot
         object:nil userInfo:@{@"loadLastSaveState": @(loadLastSaveState)}];
 }
 
